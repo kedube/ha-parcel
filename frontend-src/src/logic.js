@@ -49,6 +49,13 @@ export const EXTRA = {
 
 export const DEFAULT_ICON = 'mdi:package-variant-closed';
 
+// The timeline's hour labels, in pixels: how wide the timeline is taken to be until it
+// has been measured, the least room between two labels' centers, and between a label's
+// center and the "Now" label's.
+const ROAD_WIDTH = 700;
+const TICK_SPACING = 56;
+const NOW_CLEARANCE = 34;
+
 export const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 export const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 /** A tracking number without spaces or dashes, in capitals, for comparing. */
@@ -350,7 +357,8 @@ export function heroModel(g, view) {
 /**
  * Today's deliveries as stops along a to-scale day: where each pin and time band sits
  * (in percent), which of up to three lanes keeps pins from colliding, and the hour marks.
- * Returns null when there is nothing to show.
+ * view.roadWidth is the timeline's width in pixels, once measured. Returns null when
+ * there is nothing to show.
  */
 export function roadLayout(todays, deliveredToday, view) {
   const { fmt, today, now } = view;
@@ -405,9 +413,14 @@ export function roadLayout(todays, deliveredToday, view) {
     p.lane = lane;
     p.x = pct(p.at);
   }
+  // A label every two hours, or fewer where the timeline is too narrow for that; any
+  // label "Now" would overlap gives way to it.
+  const hourPx = (view.roadWidth || ROAD_WIDTH) / (to - from);
+  const step = [2, 4, 6, 8, 12].find((hours) => hours * hourPx >= TICK_SPACING) || 12;
   const ticks = [];
   for (let h = from; h <= to; h += 2) {
-    ticks.push({ hour: h, left: pct(h), label: fmt.hourLabel(h), hidden: Math.abs(h - nowH) < (to - from) * 0.07 });
+    const hidden = (h - from) % step !== 0 || Math.abs(h - nowH) * hourPx < NOW_CLEARANCE;
+    ticks.push({ hour: h, left: pct(h), label: fmt.hourLabel(h), hidden });
   }
   return {
     pins,

@@ -191,7 +191,6 @@ export const styles = css`
   .hours { position: relative; height: 18px; margin-top: 10px; font-size: 12px; color: var(--pp-text2); font-variant-numeric: tabular-nums; }
   .hours span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
   .hours .now-lab { color: var(--pp-primary); font-weight: 600; }
-  @media (max-width: 420px) { .hours .tick:nth-child(even) { display: none; } }
   .anytime { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; }
   .any-label { margin-right: 2px; font-size: 13px; color: var(--pp-text2); }
   .any-chip {

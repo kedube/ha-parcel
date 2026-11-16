@@ -118,6 +118,8 @@ class ParcelConfigFlow(ConfigFlow, domain=DOMAIN):
     """Connect a Parcel account with its API key."""
 
     VERSION = 1
+    # 2: package sensors' unique IDs no longer contain tracking numbers.
+    MINOR_VERSION = 2
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Ask for the API key."""

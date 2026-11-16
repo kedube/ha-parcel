@@ -29,6 +29,10 @@ WEB_SIGN_IN_DOCS_URL: Final = (
 )
 PARCEL_WEB_URL: Final = WEB_BASE
 
+# Entry data, besides the API key: a random secret, made once per account, that the
+# unique IDs of package sensors are derived from (see entity.package_id).
+CONF_PACKAGE_ID_SECRET: Final = "package_id_secret"
+
 # Options
 CONF_ACCOUNT_TOKEN: Final = "account_token"
 # When the web sign-in token was entered, so we can warn before it expires.

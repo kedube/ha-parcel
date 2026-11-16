@@ -275,6 +275,25 @@ test('the day is drawn to scale, and close stops get lanes of their own', () => 
   for (const pin of road.pins) assert.ok(pin.x >= 0 && pin.x <= 100);
 });
 
+test('hour labels thin out on a narrow timeline and keep clear of "Now"', () => {
+  const noonToThree = pkg({ etaStart: at('2026-11-16T17:00:00Z'), etaEnd: at('2026-11-16T20:00:00Z') });
+  const shown = (roadWidth, nowIso) =>
+    roadLayout([noonToThree], [], { fmt, today, now: new Date(nowIso), roadWidth })
+      .ticks.filter((t) => !t.hidden)
+      .map((t) => t.hour);
+  // A phone draws 8 AM to 8 PM in under 300 px: a label every four hours.
+  assert.deepEqual(shown(288, '2026-11-16T15:00:00Z'), [8, 12, 16, 20]); // 10 AM
+  // At 11:15 "Now" would cover noon, so only that label goes; the rest stay four-hourly.
+  assert.deepEqual(shown(288, '2026-11-16T16:15:00Z'), [8, 16, 20]);
+  // Over a whole day, the narrowest phones get one every eight hours.
+  const allDay = pkg({ etaStart: at('2026-11-16T05:30:00Z'), etaEnd: at('2026-11-17T04:00:00Z') });
+  const day = roadLayout([allDay], [], { fmt, today, now: new Date('2026-11-16T17:00:00Z'), roadWidth: 218 });
+  assert.deepEqual([day.from, day.to], [0, 24]);
+  assert.deepEqual(day.ticks.filter((t) => !t.hidden).map((t) => t.hour), [0, 8, 16, 24]);
+  // A desktop has room for every two hours, even 45 minutes from "Now".
+  assert.deepEqual(shown(750, '2026-11-16T16:15:00Z'), [8, 10, 12, 14, 16, 18, 20]);
+});
+
 test('the day stretches for an early or late stop, in whole two-hour steps', () => {
   const early = pkg({ etaStart: at('2026-11-16T11:00:00Z'), etaEnd: at('2026-11-16T12:30:00Z') }); // 6 to 7:30 AM
   const late = pkg({ etaEnd: at('2026-11-17T03:00:00Z') }); // by 10 PM

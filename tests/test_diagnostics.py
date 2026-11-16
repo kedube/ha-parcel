@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 
 from .test_init import setup
 from custom_components.parcel.api import ParcelConnectionError, ParcelRequestError
+from custom_components.parcel.const import CONF_PACKAGE_ID_SECRET
 from custom_components.parcel.diagnostics import async_get_config_entry_diagnostics
 
 
@@ -37,6 +38,7 @@ async def test_nothing_personal_is_left_in(
     for private in (
         "test-key",
         "test-token",
+        config_entry.data[CONF_PACKAGE_ID_SECRET],
         "1Z999AA10123456784",
         "TBA312345678901",
         "Coffee grinder",

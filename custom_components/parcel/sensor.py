@@ -14,11 +14,9 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import CONF_PACKAGE_SENSORS
 from .coordinator import ParcelConfigEntry, ParcelCoordinator
-from .entity import ParcelEntity
+from .entity import PACKAGE_PREFIX, ParcelEntity, package_id
 from .models import STATUS_OPTIONS, Delivery, join_names
 from .summary import Summary
-
-PACKAGE_PREFIX = "package_"
 
 
 def _sentence(items: list[Delivery], none: str, one: str, many: str) -> str:
@@ -109,30 +107,30 @@ async def async_setup_entry(
     registry = er.async_get(hass)
     prefix = f"{entry.entry_id}_{PACKAGE_PREFIX}"
     enabled = entry.options.get(CONF_PACKAGE_SENSORS, True)
-    current: set[str] = set()
+    current: set[str] = set()  # package_id of each sensor added
 
     @callback
     def sync_packages() -> None:
         data = coordinator.data
         wanted = (
             {
-                key
+                package_id(entry, key): key
                 for key, delivery in data.deliveries.items()
                 if coordinator.wants_package_sensor(delivery)
             }
             if enabled and data
-            else set()
+            else {}
         )
-        new = wanted - current
-        if new:
-            async_add_entities([ParcelPackageSensor(coordinator, key) for key in sorted(new)])
+        if new := wanted.keys() - current:
+            keys = sorted(wanted[added] for added in new)
+            async_add_entities([ParcelPackageSensor(coordinator, key) for key in keys])
             current.update(new)
         for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
             if reg_entry.domain != "sensor" or not reg_entry.unique_id.startswith(prefix):
                 continue
-            if reg_entry.unique_id.removeprefix(prefix) not in wanted:
+            if (gone := reg_entry.unique_id.removeprefix(prefix)) not in wanted:
                 registry.async_remove(reg_entry.entity_id)
-                current.discard(reg_entry.unique_id.removeprefix(prefix))
+                current.discard(gone)
 
     sync_packages()
     entry.async_on_unload(coordinator.async_add_listener(sync_packages))
@@ -261,7 +259,9 @@ class ParcelPackageSensor(ParcelEntity, SensorEntity):
 
     def __init__(self, coordinator: ParcelCoordinator, key: str) -> None:
         """Track one package by its carrier and tracking number."""
-        super().__init__(coordinator, f"{PACKAGE_PREFIX}{key}")
+        super().__init__(
+            coordinator, f"{PACKAGE_PREFIX}{package_id(coordinator.config_entry, key)}"
+        )
         self._key = key
         delivery = coordinator.data.deliveries.get(key) if coordinator.data else None
         self._name = delivery.description if delivery else key
@@ -282,6 +282,20 @@ class ParcelPackageSensor(ParcelEntity, SensorEntity):
     def name(self) -> str:
         """The package's name in Parcel."""
         return self._name
+
+    @property
+    def suggested_object_id(self) -> str | None:
+        """What a new entity ID is made from: the package's name, not its tracking number.
+
+        A package without a name goes by its tracking number, which as part of the
+        entity ID would stay in Home Assistant's entity registry after the sensor is
+        gone. Such a package's entity ID is made from its carrier ("UPS package").
+        """
+        delivery = self._delivery
+        if delivery is not None and delivery.description != delivery.tracking_number:
+            return delivery.description
+        carrier = self._key.split(":", 1)[0]
+        return f"{self.coordinator.carriers.short_name(carrier)} package"
 
     @property
     def available(self) -> bool:

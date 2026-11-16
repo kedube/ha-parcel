@@ -74,6 +74,7 @@ class ParcelPackagesPanel extends LitElement {
     _toast: { state: true },
     _refreshing: { state: true },
     _tick: { state: true },
+    _roadWidth: { state: true },
   };
 
   static styles = styles;
@@ -96,6 +97,7 @@ class ParcelPackagesPanel extends LitElement {
     this._toast = null;
     this._refreshing = false;
     this._tick = 0;
+    this._roadWidth = 0;
     this._items = [];
     this._iconRules = [];
     this._onKey = this._onKey.bind(this);
@@ -127,6 +129,8 @@ class ParcelPackagesPanel extends LitElement {
     window.removeEventListener('click', this._onDocClick);
     clearInterval(this._timer);
     clearTimeout(this._toastTimer);
+    this._roadObserver?.disconnect();
+    this._observedRoad = null;
     this._unsubscribe();
   }
 
@@ -161,6 +165,17 @@ class ParcelPackagesPanel extends LitElement {
     if (changed.has('hass')) {
       this.toggleAttribute('dark', Boolean(this.hass?.themes?.darkMode));
       this._subscribe();
+    }
+    // Which hour labels fit on the timeline depends on how wide it is drawn.
+    const hours = this.renderRoot.querySelector('.hours');
+    if (hours !== this._observedRoad) {
+      this._roadObserver ??= new ResizeObserver(([entry]) => {
+        const width = Math.round(entry.contentRect.width);
+        if (width && width !== this._roadWidth) this._roadWidth = width;
+      });
+      if (this._observedRoad) this._roadObserver.unobserve(this._observedRoad);
+      if (hours) this._roadObserver.observe(hours);
+      this._observedRoad = hours;
     }
   }
 
@@ -445,7 +460,7 @@ class ParcelPackagesPanel extends LitElement {
     if (!this._fmt) this._fmt = makeFormat(this.hass);
     const now = new Date();
     const today = this._fmt.ymd(now);
-    const view = { fmt: this._fmt, today, now };
+    const view = { fmt: this._fmt, today, now, roadWidth: this._roadWidth };
     const showMenu = this.narrow || this.hass?.dockedSidebar === 'always_hidden';
     const entries = this._entries;
     const updatedAt = entries.map((e) => toDate(e.updated_at)).filter(Boolean).sort((a, b) => b - a)[0];

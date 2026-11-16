@@ -42,6 +42,8 @@ async def test_user_flow(hass: HomeAssistant, mock_parcel: SimpleNamespace) -> N
         )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"] == {"api_key": "good-key"}
+    # Current, so no migration runs; the ID secret is made at the first setup.
+    assert result["result"].minor_version == 2
 
 
 async def test_user_flow_errors(hass: HomeAssistant, mock_parcel: SimpleNamespace) -> None:

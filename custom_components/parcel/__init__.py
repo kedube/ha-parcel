@@ -2,23 +2,33 @@
 
 from __future__ import annotations
 
+import logging
+import secrets
+from typing import Any
+
 from homeassistant.const import CONF_API_KEY, Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers import config_validation as cv, device_registry as dr
+from homeassistant.helpers import (
+    config_validation as cv,
+    device_registry as dr,
+    entity_registry as er,
+)
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 
 from .api import ParcelClient, ParcelWebClient
 from .carriers import CarrierRegistry
-from .const import CONF_ACCOUNT_TOKEN, DATA_CARRIERS, DOMAIN
+from .const import CONF_ACCOUNT_TOKEN, CONF_PACKAGE_ID_SECRET, DATA_CARRIERS, DOMAIN
 from .coordinator import ParcelConfigEntry, ParcelCoordinator
-from .entity import device_info
+from .entity import PACKAGE_PREFIX, device_info, package_id
 from .panel import async_notify_panel, async_register_panel, async_unregister_panel
 from .services import async_setup_services
 from .storage import ParcelStorage
 from .web_sign_in import async_clear_issues, web_session
 from .websocket import async_setup_websocket
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.BUTTON, Platform.EVENT, Platform.SENSOR]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -32,8 +42,57 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
+@callback
+def _async_ensure_package_id_secret(hass: HomeAssistant, entry: ParcelConfigEntry) -> None:
+    """Give the account the random secret its package sensors' IDs come from, once."""
+    if not entry.data.get(CONF_PACKAGE_ID_SECRET):
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, CONF_PACKAGE_ID_SECRET: secrets.token_hex(16)}
+        )
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ParcelConfigEntry) -> bool:
+    """Bring an account saved by an earlier version up to date."""
+    if entry.version > 1:
+        return False  # saved by a later version, which this one can't read
+    if entry.minor_version < 2:
+        await _async_hide_tracking_numbers(hass, entry)
+        hass.config_entries.async_update_entry(entry, minor_version=2)
+    return True
+
+
+async def _async_hide_tracking_numbers(hass: HomeAssistant, entry: ParcelConfigEntry) -> None:
+    """Version 1.2: package sensors' unique IDs stop showing the tracking number.
+
+    They used to be "<entry id>_package_<carrier>:<tracking number>". Only the unique
+    ID changes, so each sensor keeps its entity ID, history and customizations.
+    """
+    _async_ensure_package_id_secret(hass, entry)
+    registry = er.async_get(hass)
+    prefix = f"{entry.entry_id}_{PACKAGE_PREFIX}"
+    moved = 0
+
+    @callback
+    def hide(reg_entry: er.RegistryEntry) -> dict[str, Any] | None:
+        nonlocal moved
+        key = reg_entry.unique_id.removeprefix(prefix)
+        if reg_entry.domain != "sensor" or key == reg_entry.unique_id or ":" not in key:
+            return None  # not a package sensor, or already moved
+        unique_id = f"{prefix}{package_id(entry, key)}"
+        if registry.async_get_entity_id("sensor", DOMAIN, unique_id):
+            # The package already has a sensor under its new ID; this one is left over.
+            registry.async_remove(reg_entry.entity_id)
+            return None
+        moved += 1
+        return {"new_unique_id": unique_id}
+
+    await er.async_migrate_entries(hass, entry.entry_id, hide)
+    _LOGGER.debug("Gave %s package sensors IDs without tracking numbers", moved)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ParcelConfigEntry) -> bool:
     """Set up one Parcel account."""
+    _async_ensure_package_id_secret(hass, entry)
     carriers: CarrierRegistry = hass.data[DATA_CARRIERS]
     storage = ParcelStorage(hass, entry.entry_id)
     await storage.async_load()

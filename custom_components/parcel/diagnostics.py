@@ -10,7 +10,7 @@ from homeassistant.const import CONF_API_KEY
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
-from .const import CONF_ACCOUNT_TOKEN
+from .const import CONF_ACCOUNT_TOKEN, CONF_PACKAGE_ID_SECRET
 from .coordinator import ParcelConfigEntry
 
 # account_token_set_at is a timestamp, not a secret, so it's left in for debugging.
@@ -19,6 +19,7 @@ from .coordinator import ParcelConfigEntry
 TO_REDACT = {
     CONF_API_KEY,
     CONF_ACCOUNT_TOKEN,
+    CONF_PACKAGE_ID_SECRET,
     "key",
     "tracking_number",
     "description",

@@ -6,6 +6,13 @@ Follow your [Parcel](https://parcelapp.net) deliveries in Home Assistant. You ge
 
 This is an unofficial integration. It isn't made by or affiliated with Parcel. Its logo was drawn for this project in the style of the Parcel app's icon; it isn't Parcel's own artwork.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/kedube/ha-parcel/main/docs/images/panel-dark.png">
+    <img src="https://raw.githubusercontent.com/kedube/ha-parcel/main/docs/images/panel-light.png" alt="The Packages panel: three packages arriving today on a timeline, a missed delivery that needs a look, and a package ready for pickup">
+  </picture>
+</p>
+
 ## What you get
 
 - **A Packages panel in the sidebar.** It opens with today's deliveries on a timeline, flags anything that needs a look, and groups the rest by when they arrive. You can add a package by pasting its tracking number (the carrier is recognized automatically), and delete packages from the panel too.
@@ -15,6 +22,14 @@ This is an unofficial integration. It isn't made by or affiliated with Parcel. I
 - **A sensor for each package** (optional), removed two days after delivery.
 - **Actions** to add, delete and check packages from scripts and automations.
 - **Blueprints** for a delivery alert, a morning briefing, and a needs-attention alert.
+
+The panel on a phone: today at a glance, a package's details, and adding a package by its tracking number.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/kedube/ha-parcel/main/docs/images/phone-today.png" alt="Today's deliveries on a phone" width="260">
+  <img src="https://raw.githubusercontent.com/kedube/ha-parcel/main/docs/images/phone-details.png" alt="A package's details: arriving between 12 and 3 PM, with the carrier's latest updates" width="260">
+  <img src="https://raw.githubusercontent.com/kedube/ha-parcel/main/docs/images/phone-add.png" alt="Adding a package: the carrier is recognized from the tracking number" width="260">
+</p>
 
 ## Requirements
 
@@ -121,7 +136,7 @@ actions:
 | `sensor.parcel_delivered_today` | Number of packages | `message`, `names`, `packages` |
 | `sensor.parcel_next_delivery_day` | The next day a package is expected | `package`, `names`, `count` |
 | `sensor.parcel_next_delivery` | When the next delivery window starts, if a carrier gave a time | `package`, `window_end` |
-| `sensor.parcel_<package name>` | The package's status | `carrier`, `tracking_number`, `expected`, `last_update`, `last_location` |
+| `sensor.parcel_<package name>` | The package's status (a package without a name gets `sensor.parcel_<carrier>_package`) | `carrier`, `tracking_number`, `expected`, `last_update`, `last_location` |
 | `event.parcel_package_update` | Time of the last change | `event_type`, `message`, `description` |
 | `button.parcel_check_for_updates` | Checks Parcel now | |
 
@@ -167,7 +182,7 @@ Parcel's API returns Parcel's own cached copy of your deliveries, so changes rea
 
 ## Privacy
 
-Your API key and web sign-in are stored in Home Assistant like other integration credentials. Package details are kept in Home Assistant's `.storage` folder so restarts don't spend checks. The per-package sensors keep tracking numbers, locations and carrier updates out of Home Assistant's history; the event entity and the `parcel_package_update` event do record them, since automations use them. The integration talks only to Parcel. Diagnostics downloads remove keys, tokens, tracking numbers, names, locations and the carriers' own update text.
+Your API key and web sign-in are stored in Home Assistant like other integration credentials. Package details are kept in Home Assistant's `.storage` folder so restarts don't spend checks. The per-package sensors keep tracking numbers, locations and carrier updates out of Home Assistant's history; the event entity and the `parcel_package_update` event do record them, since automations use them. Home Assistant's entity registry remembers removed sensors for as long as the account is set up. For a package sensor it keeps the entity ID, which comes from the package's name, but never the tracking number; a package without a name gets an entity ID from its carrier instead. Sensors made by earlier versions switch over on their own. Records of sensors removed before the update still hold tracking numbers, until 30 days after the account is removed. The integration talks only to Parcel. Diagnostics downloads remove keys, tokens, tracking numbers, names, locations and the carriers' own update text.
 
 ## Troubleshooting
 
