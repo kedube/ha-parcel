@@ -1,0 +1,36 @@
+blueprint:
+  name: Parcel - alert when a package needs attention
+  description: >
+    Sends a notification when a delivery is missed, runs into a problem, or stops
+    getting updates, like "UPS missed the delivery of Framed print".
+  domain: automation
+  source_url: https://github.com/kedube/ha-parcel/blob/main/blueprints/automation/parcel/needs_attention.yaml
+  input:
+    parcel_device:
+      name: Parcel account
+      selector:
+        device:
+          filter:
+            - integration: parcel
+    notify_device:
+      name: Phone
+      description: A phone with the Home Assistant app.
+      selector:
+        device:
+          filter:
+            - integration: mobile_app
+
+mode: queued
+
+triggers:
+  - trigger: device
+    domain: parcel
+    device_id: !input parcel_device
+    type: package_needs_attention
+
+actions:
+  - domain: mobile_app
+    type: notify
+    device_id: !input notify_device
+    title: A package needs a look
+    message: "{{ trigger.event.data.message }}"

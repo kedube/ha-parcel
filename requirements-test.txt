@@ -1,0 +1,6 @@
+# What CI and local test runs install. Keep the two Home Assistant pins in step:
+# pytest-homeassistant-custom-component sets the Home Assistant version, and the
+# frontend package must be the one that version of Home Assistant asks for.
+pytest-homeassistant-custom-component==0.13.375
+home-assistant-frontend==20260930.5
+ruff==0.14.0

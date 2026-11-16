@@ -1,0 +1,28 @@
+# Secrets for local development (Parcel API key, web session cookie)
+.env
+.env.*
+
+# Local Home Assistant used for development
+.venv/
+config/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Frontend build tooling
+node_modules/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.log
+
+# Test environment (pinned to the HA version pytest-homeassistant-custom-component supports)
+.venv-test/

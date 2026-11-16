@@ -1,0 +1,51 @@
+{
+  "entity": {
+    "sensor": {
+      "out_for_delivery": {
+        "default": "mdi:truck-fast-outline"
+      },
+      "arriving_today": {
+        "default": "mdi:calendar-today"
+      },
+      "needs_attention": {
+        "default": "mdi:alert-circle-outline"
+      },
+      "ready_for_pickup": {
+        "default": "mdi:storefront-outline"
+      },
+      "on_the_way": {
+        "default": "mdi:truck-outline"
+      },
+      "delivered_today": {
+        "default": "mdi:package-variant-closed-check"
+      },
+      "next_delivery": {
+        "default": "mdi:calendar-clock"
+      },
+      "package": {
+        "default": "mdi:package-variant-closed"
+      }
+    },
+    "event": {
+      "package_update": {
+        "default": "mdi:package-variant-closed"
+      }
+    },
+    "button": {
+      "check_now": {
+        "default": "mdi:refresh"
+      }
+    }
+  },
+  "services": {
+    "add_package": {
+      "service": "mdi:package-variant-closed-plus"
+    },
+    "delete_package": {
+      "service": "mdi:package-variant-closed-remove"
+    },
+    "refresh": {
+      "service": "mdi:refresh"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "ha-parcel-panel",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Source for the Packages sidebar panel in the Parcel integration for Home Assistant",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch"
+  },
+  "dependencies": {
+    "@mdi/js": "7.4.47",
+    "lit": "3.3.3"
+  },
+  "devDependencies": {
+    "@fontsource/outfit": "5.3.0",
+    "esbuild": "0.28.2"
+  }
+}

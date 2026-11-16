@@ -1,0 +1,277 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect Parcel",
+        "description": "Parcel's API comes with Parcel Premium. To get your key:\n\n1. Sign in at [web.parcelapp.net]({web_url}).\n2. Select **API** (next to My Deliveries and Add Delivery).\n3. Select **Create a Key**, then **Copy the Key**, and paste it below.\n\nEach Parcel account has one key. If you revoke it later, Home Assistant will ask for the new one. [More help]({docs_url})",
+        "data": {
+          "api_key": "API key"
+        },
+        "data_description": {
+          "api_key": "The key from the Parcel API panel in the web app."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Enter your new Parcel API key",
+        "description": "Parcel no longer accepts the API key for **{title}**, usually because it was revoked. Sign in at [web.parcelapp.net]({web_url}), select **API**, then **Create a Key** and **Copy the Key**. [More help]({docs_url})",
+        "data": {
+          "api_key": "API key"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Parcel didn't accept this API key. Check it, or create a new one in the Parcel web app.",
+      "cannot_connect": "Couldn't reach Parcel. Check the internet connection and try again.",
+      "rate_limited": "Parcel's limit of 20 checks an hour was reached. Try again in a few minutes.",
+      "unknown": "Something unexpected happened. The logs have details."
+    },
+    "abort": {
+      "already_configured": "This API key is already set up.",
+      "reauth_successful": "The API key was updated."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Parcel options",
+        "description": "**Deleting packages:** Parcel's API can't delete, so Home Assistant uses your Parcel web sign-in for that. Sign in at [web.parcelapp.net]({web_url}), copy the `account_token` cookie from your browser's developer tools, and paste it below. It lasts about a year. [Step-by-step help]({docs_url})",
+        "data": {
+          "scan_interval": "Check for updates every",
+          "package_sensors": "Create a sensor for each package",
+          "account_token": "Parcel web sign-in (for deleting packages)"
+        },
+        "data_description": {
+          "scan_interval": "Parcel allows 20 checks an hour, so 4 minutes is the shortest.",
+          "package_sensors": "Each package gets its own sensor, removed two days after delivery. The summary sensors are always there.",
+          "account_token": "Optional. Leave empty to turn deleting off."
+        }
+      }
+    },
+    "error": {
+      "invalid_account_token": "Parcel didn't accept this sign-in. Sign in again at web.parcelapp.net and copy the new account_token.",
+      "cannot_connect": "Couldn't reach Parcel. Check the internet connection and try again.",
+      "unknown": "Something unexpected happened. The logs have details."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "out_for_delivery": {
+        "name": "Out for delivery"
+      },
+      "arriving_today": {
+        "name": "Arriving today"
+      },
+      "needs_attention": {
+        "name": "Needs attention"
+      },
+      "ready_for_pickup": {
+        "name": "Ready for pickup"
+      },
+      "on_the_way": {
+        "name": "On the way"
+      },
+      "delivered_today": {
+        "name": "Delivered today"
+      },
+      "next_delivery": {
+        "name": "Next delivery"
+      },
+      "package": {
+        "state": {
+          "delivered": "Delivered",
+          "stalled": "No recent updates",
+          "in_transit": "On the way",
+          "ready_for_pickup": "Ready for pickup",
+          "out_for_delivery": "Out for delivery",
+          "not_found": "Not found yet",
+          "failed_attempt": "Missed delivery",
+          "exception": "Delivery problem",
+          "label_created": "Label created"
+        }
+      }
+    },
+    "event": {
+      "package_update": {
+        "name": "Package update",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "added": "Package added",
+              "label_created": "Label created",
+              "in_transit": "On the way",
+              "out_for_delivery": "Out for delivery",
+              "ready_for_pickup": "Ready for pickup",
+              "delivered": "Delivered",
+              "needs_attention": "Needs attention",
+              "update": "Tracking update",
+              "removed": "No longer tracked"
+            }
+          }
+        }
+      }
+    },
+    "button": {
+      "check_now": {
+        "name": "Check for updates"
+      }
+    }
+  },
+  "device_automation": {
+    "trigger_type": {
+      "package_delivered": "A package was delivered",
+      "package_out_for_delivery": "A package is out for delivery",
+      "package_needs_attention": "A package needs attention",
+      "package_ready_for_pickup": "A package is ready for pickup",
+      "package_added": "A package was added",
+      "package_update": "Any package update"
+    }
+  },
+  "services": {
+    "add_package": {
+      "name": "Add package",
+      "description": "Starts tracking a package in Parcel. Parcel allows 20 adds a day, failed tries included.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Parcel account",
+          "description": "Needed only when more than one account is set up."
+        },
+        "tracking_number": {
+          "name": "Tracking number",
+          "description": "The number from the shipping email or receipt."
+        },
+        "description": {
+          "name": "Name",
+          "description": "What to call the package, shown here and in the Parcel app."
+        },
+        "carrier": {
+          "name": "Carrier code",
+          "description": "Parcel's code for the carrier, like ups or usps. Leave empty to recognize it from the number."
+        },
+        "postcode": {
+          "name": "Postcode",
+          "description": "Only for carriers that need it."
+        },
+        "email": {
+          "name": "Email",
+          "description": "Only for carriers that need it, such as Apple Store orders."
+        },
+        "send_push_confirmation": {
+          "name": "Confirm on phone",
+          "description": "Have Parcel send a notification to your devices when the package is added."
+        }
+      }
+    },
+    "delete_package": {
+      "name": "Delete package",
+      "description": "Deletes a package from Parcel on all your devices. Needs the Parcel web sign-in in the integration's options.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Parcel account",
+          "description": "Needed only when more than one account is set up."
+        },
+        "tracking_number": {
+          "name": "Tracking number",
+          "description": "The package's tracking number."
+        },
+        "carrier": {
+          "name": "Carrier code",
+          "description": "Only needed if two packages share a tracking number."
+        }
+      }
+    },
+    "refresh": {
+      "name": "Check for updates",
+      "description": "Checks Parcel now. Parcel allows 20 checks an hour.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Parcel account",
+          "description": "Leave empty to check every account."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "hourly_limit": {
+      "message": "Parcel's limit of 20 checks an hour has been reached. Home Assistant will check again shortly."
+    },
+    "invalid_api_key": {
+      "message": "Parcel didn't accept the API key. If you revoked it, enter the new key."
+    },
+    "rate_limited": {
+      "message": "Parcel asked Home Assistant to slow down. It will check again in about 20 minutes."
+    },
+    "update_failed": {
+      "message": "Couldn't get updates from Parcel: {error}"
+    },
+    "refresh_limit": {
+      "message": "Parcel allows 20 checks an hour, and a few are kept for scheduled checks. Try again in about {minutes} minutes."
+    },
+    "rate_limit_pause": {
+      "message": "Parcel asked Home Assistant to slow down, so checks are paused for about {minutes} more minutes."
+    },
+    "tracking_number_required": {
+      "message": "Enter a tracking number."
+    },
+    "description_required": {
+      "message": "Enter a name for the package."
+    },
+    "carrier_required": {
+      "message": "Couldn't tell the carrier from this number. Choose the carrier."
+    },
+    "unknown_carrier": {
+      "message": "Parcel doesn't know the carrier code \"{carrier}\"."
+    },
+    "already_tracking": {
+      "message": "{number} is already being tracked."
+    },
+    "extra_required": {
+      "message": "{carrier} needs one more detail to track this package."
+    },
+    "add_limit": {
+      "message": "Parcel allows 20 new packages a day through Home Assistant, and today's are used up. Try again tomorrow, or add it in the Parcel app."
+    },
+    "add_rejected": {
+      "message": "Parcel didn't accept the package: {error}"
+    },
+    "add_failed": {
+      "message": "Couldn't add the package: {error}"
+    },
+    "delete_needs_sign_in": {
+      "message": "To delete packages, add your Parcel web sign-in in the integration's options."
+    },
+    "package_not_found": {
+      "message": "Couldn't find that package."
+    },
+    "web_sign_in_expired": {
+      "message": "Your Parcel web sign-in has expired. Sign in again at web.parcelapp.net and update it in the integration's options."
+    },
+    "delete_failed": {
+      "message": "Couldn't delete the package: {error}"
+    },
+    "delete_not_confirmed": {
+      "message": "Parcel said the package was deleted, but it's still listed. Try again, or delete it in the Parcel app."
+    },
+    "entry_not_loaded": {
+      "message": "That Parcel account isn't loaded."
+    },
+    "not_set_up": {
+      "message": "Parcel isn't set up yet."
+    },
+    "choose_account": {
+      "message": "More than one Parcel account is set up. Choose which one to use."
+    },
+    "choose_carrier": {
+      "message": "More than one package has this tracking number. Add the carrier code."
+    }
+  },
+  "issues": {
+    "web_sign_in_expired": {
+      "title": "Parcel web sign-in expired",
+      "description": "Home Assistant couldn't delete a package from **{title}** because Parcel no longer accepts the web sign-in. Sign in again at web.parcelapp.net, copy the new `account_token` cookie, and paste it in **Settings › Devices & services › Parcel › Configure**."
+    },
+    "web_sign_in_expiring": {
+      "title": "Parcel web sign-in expires soon",
+      "description": "The Parcel web sign-in for **{title}** expires in about {days} days. Deleting packages keeps working until then. When you have a minute, sign in at web.parcelapp.net, copy the new `account_token` cookie, and paste it in **Settings › Devices & services › Parcel › Configure**."
+    }
+  }
+}

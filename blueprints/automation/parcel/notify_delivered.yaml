@@ -1,0 +1,36 @@
+blueprint:
+  name: Parcel - tell me when a package is delivered
+  description: >
+    Sends a notification to your phone, like "Coffee grinder was delivered",
+    when Parcel reports a delivery.
+  domain: automation
+  source_url: https://github.com/kedube/ha-parcel/blob/main/blueprints/automation/parcel/notify_delivered.yaml
+  input:
+    parcel_device:
+      name: Parcel account
+      selector:
+        device:
+          filter:
+            - integration: parcel
+    notify_device:
+      name: Phone
+      description: A phone with the Home Assistant app.
+      selector:
+        device:
+          filter:
+            - integration: mobile_app
+
+mode: queued
+
+triggers:
+  - trigger: device
+    domain: parcel
+    device_id: !input parcel_device
+    type: package_delivered
+
+actions:
+  - domain: mobile_app
+    type: notify
+    device_id: !input notify_device
+    title: Package delivered
+    message: "{{ trigger.event.data.message }}"

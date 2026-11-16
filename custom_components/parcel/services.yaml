@@ -1,0 +1,54 @@
+add_package:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: parcel
+    tracking_number:
+      required: true
+      example: "1Z999AA10123456784"
+      selector:
+        text:
+    description:
+      required: true
+      example: "Coffee grinder"
+      selector:
+        text:
+    carrier:
+      example: "ups"
+      selector:
+        text:
+    postcode:
+      selector:
+        text:
+    email:
+      selector:
+        text:
+          type: email
+    send_push_confirmation:
+      default: false
+      selector:
+        boolean:
+
+delete_package:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: parcel
+    tracking_number:
+      required: true
+      example: "1Z999AA10123456784"
+      selector:
+        text:
+    carrier:
+      example: "ups"
+      selector:
+        text:
+
+refresh:
+  fields:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: parcel

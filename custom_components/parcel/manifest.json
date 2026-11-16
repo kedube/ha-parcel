@@ -1,0 +1,13 @@
+{
+  "domain": "parcel",
+  "name": "Parcel",
+  "codeowners": ["@kedube"],
+  "config_flow": true,
+  "dependencies": ["frontend", "http", "panel_custom", "websocket_api"],
+  "documentation": "https://github.com/kedube/ha-parcel",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/kedube/ha-parcel/issues",
+  "requirements": [],
+  "version": "0.00"
+}

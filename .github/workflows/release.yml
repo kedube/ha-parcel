@@ -1,0 +1,198 @@
+name: Release
+
+# Started by hand: Actions → Release → Run workflow. See docs/RELEASING.md.
+#
+# Versions count in hundredths (0.01 … 0.99, 1.00, 1.01 …). The next version is
+# worked out from the release tags that already exist, by scripts/release.py.
+run-name: Release ${{ inputs.release_type }}${{ inputs.dry_run && ' (preview)' || '' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: "Kind of release. minor: 0.01 → 0.02 · major: 0.37 → 1.00 · beta: test build of the next minor (0.02b1) · major-beta: test build of the next major (1.00b1)"
+        type: choice
+        required: true
+        default: minor
+        options:
+          - minor
+          - major
+          - beta
+          - major-beta
+      summary:
+        description: "What's new (optional; shown at the top of the release notes)"
+        type: string
+        required: false
+        default: ""
+      dry_run:
+        description: "Preview only: run the checks and build everything, but publish nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One release at a time; a second one waits for the first to finish.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash # also makes a failure anywhere in a pipeline fail the step
+
+jobs:
+  plan:
+    name: Work out the version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+      manifest_version: ${{ steps.next.outputs.manifest_version }}
+      prerelease: ${{ steps.next.outputs.prerelease }}
+      previous: ${{ steps.next.outputs.previous }}
+    steps:
+      - name: Releases are made from the default branch
+        if: ${{ !inputs.dry_run && github.ref_name != github.event.repository.default_branch }}
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          echo "::error::Run this workflow on ${DEFAULT_BRANCH}, not ${REF_NAME}. (A preview can run on any branch.)"
+          exit 1
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the release tags decide the next version
+
+      - name: Work out the version
+        id: next
+        env:
+          RELEASE_TYPE: ${{ inputs.release_type }}
+        run: python3 scripts/release.py next "$RELEASE_TYPE"
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+          MANIFEST_VERSION: ${{ steps.next.outputs.manifest_version }}
+          PREVIOUS: ${{ steps.next.outputs.previous }}
+          RELEASE_TYPE: ${{ inputs.release_type }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          {
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "## Preview of ${VERSION}"
+              echo
+              echo "Nothing will be published."
+            else
+              echo "## Releasing ${VERSION}"
+            fi
+            echo
+            echo "- Kind of release: ${RELEASE_TYPE}"
+            echo "- Version inside the integration: ${MANIFEST_VERSION}"
+            echo "- Changes listed since: ${PREVIOUS:-the beginning}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  checks:
+    name: Checks
+    needs: plan
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  publish:
+    name: ${{ inputs.dry_run && 'Preview' || 'Publish' }}
+    needs: [plan, checks]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the release commit and tag, create the GitHub release
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the release notes list the commits since the last release
+
+      - name: Set the version and tag it
+        id: tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git rev-parse --quiet --verify "refs/tags/${VERSION}" >/dev/null; then
+            # Only when this job is re-run after it failed part-way: the tag was
+            # already pushed, so carry on from it instead of releasing twice.
+            echo "Tag ${VERSION} is already there; picking up from it."
+            git checkout --quiet --detach "refs/tags/${VERSION}"
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
+          else
+            python3 scripts/release.py stamp "$VERSION"
+            if [ -n "$(git status --porcelain -- custom_components/parcel/manifest.json)" ]; then
+              git commit --quiet -m "Release ${VERSION}" -- custom_components/parcel/manifest.json
+            fi
+            git tag --annotate "$VERSION" --message "Release ${VERSION}"
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build parcel.zip and the release notes
+        env:
+          RELEASE_SUMMARY: ${{ inputs.summary }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/release"
+          git archive --format=zip --output "${RUNNER_TEMP}/release/parcel.zip" "${VERSION}:custom_components/parcel"
+          python3 scripts/release.py notes "$VERSION" > "${RUNNER_TEMP}/release/release-notes.md"
+
+      - name: Preview
+        if: ${{ inputs.dry_run }}
+        run: |
+          inside=$(git show "${VERSION}:custom_components/parcel/manifest.json" | python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])')
+          files=$(zipinfo -1 "${RUNNER_TEMP}/release/parcel.zip" | grep -vc '/$')
+          {
+            echo "## Preview of ${VERSION}: nothing was published"
+            echo
+            echo "- Version inside the integration: ${inside}"
+            echo "- parcel.zip: ${files} files (download it from this run's artifacts)"
+            echo
+            echo "### Release notes"
+            echo
+            cat "${RUNNER_TEMP}/release/release-notes.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the preview files
+        if: ${{ inputs.dry_run }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-preview-${{ needs.plan.outputs.version }}
+          path: ${{ runner.temp }}/release
+          if-no-files-found: error
+          retention-days: 7
+
+      # Pushed together: either the branch and the tag both arrive, or neither does.
+      # If the branch has moved on since this run started, the push is refused and
+      # nothing is released.
+      - name: Push the release commit and tag
+        if: ${{ !inputs.dry_run && steps.tag.outputs.pushed != 'true' }}
+        run: git push --atomic origin "HEAD:refs/heads/${DEFAULT_BRANCH}" "refs/tags/${VERSION}"
+
+      - name: Publish the GitHub release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release ${VERSION} is already published."
+          else
+            flags=(--title "$VERSION" --notes-file "${RUNNER_TEMP}/release/release-notes.md" --verify-tag)
+            if [ "$PRERELEASE" = "true" ]; then
+              flags+=(--prerelease --latest=false)
+            else
+              flags+=(--latest)
+            fi
+            gh release create "$VERSION" "${RUNNER_TEMP}/release/parcel.zip" "${flags[@]}"
+          fi
+          {
+            echo "## Released ${VERSION}"
+            echo
+            echo "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${VERSION}"
+          } >> "$GITHUB_STEP_SUMMARY"
