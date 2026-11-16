@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
-import voluptuous as vol
+import probatio as vol
 
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import translation
 
+from .accounts import coordinators_for, one_coordinator
 from .carriers import CarrierRegistry
 from .const import DATA_CARRIERS, DATA_SUBSCRIBERS, DOMAIN
-from .coordinator import ParcelCoordinator
 from .models import CARRIER_PATTERNS
 from .panel import panel_payload, suggested_carriers
 
@@ -23,29 +24,6 @@ def async_setup_websocket(hass: HomeAssistant) -> None:
     """Register the panel's commands."""
     for handler in (ws_subscribe, ws_refresh, ws_add, ws_delete, ws_set_icon, ws_carriers):
         websocket_api.async_register_command(hass, handler)
-
-
-def _coordinators(hass: HomeAssistant, entry_id: str | None) -> list[ParcelCoordinator]:
-    loaded = [
-        entry
-        for entry in hass.config_entries.async_loaded_entries(DOMAIN)
-        if getattr(entry, "runtime_data", None) is not None
-    ]
-    if entry_id is None:
-        return [entry.runtime_data for entry in loaded]
-    for entry in loaded:
-        if entry.entry_id == entry_id:
-            return [entry.runtime_data]
-    raise HomeAssistantError("That Parcel account isn't loaded")
-
-
-def _one(hass: HomeAssistant, entry_id: str | None) -> ParcelCoordinator:
-    coordinators = _coordinators(hass, entry_id)
-    if len(coordinators) == 1:
-        return coordinators[0]
-    if not coordinators:
-        raise HomeAssistantError("Parcel isn't set up")
-    raise HomeAssistantError("Choose which Parcel account to use")
 
 
 async def _message(hass: HomeAssistant, err: HomeAssistantError) -> str:
@@ -69,7 +47,9 @@ def ws_subscribe(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Stream package data to the panel until it closes."""
-    subscribers: set = hass.data.setdefault(DATA_SUBSCRIBERS, set())
+    subscribers: set[Callable[[dict[str, Any]], None]] = hass.data.setdefault(
+        DATA_SUBSCRIBERS, set()
+    )
 
     @callback
     def send(payload: dict[str, Any]) -> None:
@@ -94,7 +74,7 @@ async def ws_refresh(
 ) -> None:
     """Check Parcel now."""
     try:
-        for coordinator in _coordinators(hass, msg.get("entry_id")):
+        for coordinator in coordinators_for(hass, msg.get("entry_id")):
             await coordinator.async_manual_refresh()
     except HomeAssistantError as err:
         connection.send_error(msg["id"], "refresh_failed", await _message(hass, err))
@@ -120,7 +100,7 @@ async def ws_add(
 ) -> None:
     """Add a package."""
     try:
-        result = await _one(hass, msg.get("entry_id")).async_add_package(
+        result = await one_coordinator(hass, msg.get("entry_id")).async_add_package(
             tracking_number=msg["tracking_number"],
             description=msg["description"],
             carrier_code=msg.get("carrier_code"),
@@ -143,7 +123,7 @@ async def ws_delete(
 ) -> None:
     """Delete a package from Parcel."""
     try:
-        await _one(hass, msg["entry_id"]).async_delete_package(msg["key"])
+        await one_coordinator(hass, msg["entry_id"]).async_delete_package(msg["key"])
     except HomeAssistantError as err:
         connection.send_error(msg["id"], "delete_failed", await _message(hass, err))
         return
@@ -164,7 +144,7 @@ async def ws_set_icon(
 ) -> None:
     """Change a package's icon (stored in Home Assistant only)."""
     try:
-        _one(hass, msg["entry_id"]).async_set_icon(msg["key"], msg["icon"])
+        one_coordinator(hass, msg["entry_id"]).async_set_icon(msg["key"], msg["icon"])
     except HomeAssistantError as err:
         connection.send_error(msg["id"], "set_icon_failed", await _message(hass, err))
         return

@@ -45,4 +45,6 @@ actions:
     type: notify
     device_id: !input notify_device
     title: Deliveries today
-    message: "{{ state_attr(arriving, 'message') }}: {{ state_attr(arriving, 'names') }}"
+    # One package: "Coffee grinder arrives today". More: "3 packages arrive today: A, B and C".
+    message: >-
+      {{ state_attr(arriving, 'message') }}{% if states(arriving) | int(0) > 1 %}: {{ state_attr(arriving, 'names') }}{% endif %}

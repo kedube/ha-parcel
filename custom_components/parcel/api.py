@@ -93,12 +93,20 @@ class ParcelClient:
                 async with self._session.request(
                     method, url, headers=headers, params=params, json=payload
                 ) as response:
-                    if response.status == 429:
+                    status = response.status
+                    if status == 429:
                         raise ParcelRateLimitError(
                             "Parcel's rate limit was reached", _retry_after(response)
                         )
-                    data = await _read_json(response)
-                    status = response.status
+                    try:
+                        data = await _read_json(response)
+                    except ParcelError:
+                        if status in (401, 403):
+                            # Refused, even though the reply isn't in the usual format.
+                            raise ParcelAuthError(
+                                f"Parcel refused the API key (HTTP {status})"
+                            ) from None
+                        raise
         except (aiohttp.ClientError, TimeoutError) as err:
             raise ParcelConnectionError(f"Couldn't reach Parcel: {err}") from err
 

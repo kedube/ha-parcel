@@ -21,6 +21,7 @@ from .coordinator import ParcelConfigEntry, ParcelCoordinator
 from .panel import async_notify_panel, async_register_panel, async_unregister_panel
 from .services import async_setup_services
 from .storage import ParcelStorage
+from .web_sign_in import async_clear_issues
 from .websocket import async_setup_websocket
 
 PLATFORMS = [Platform.BUTTON, Platform.EVENT, Platform.SENSOR]
@@ -42,7 +43,8 @@ def _web_session(hass: HomeAssistant) -> aiohttp.ClientSession:
         hass.data[DATA_WEB_SESSION] = async_create_clientsession(
             hass, cookie_jar=aiohttp.DummyCookieJar()
         )
-    return hass.data[DATA_WEB_SESSION]
+    session: aiohttp.ClientSession = hass.data[DATA_WEB_SESSION]
+    return session
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ParcelConfigEntry) -> bool:
@@ -51,9 +53,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ParcelConfigEntry) -> bo
     storage = ParcelStorage(hass, entry.entry_id)
     await storage.async_load()
     client = ParcelClient(async_get_clientsession(hass), entry.data[CONF_API_KEY])
-    coordinator = ParcelCoordinator(hass, entry, client, storage, carriers)
-    if token := entry.options.get(CONF_ACCOUNT_TOKEN):
-        coordinator.web_client = ParcelWebClient(_web_session(hass), token)
+    token = entry.options.get(CONF_ACCOUNT_TOKEN)
+    web_client = ParcelWebClient(_web_session(hass), token) if token else None
+    coordinator = ParcelCoordinator(hass, entry, client, storage, carriers, web_client)
 
     device = dr.async_get(hass).async_get_or_create(
         config_entry_id=entry.entry_id,
@@ -83,16 +85,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ParcelConfigEntry) -> bo
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(coordinator.async_add_listener(lambda: async_notify_panel(hass)))
-    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     await async_register_panel(hass)
     async_notify_panel(hass)
-    coordinator.async_start_web_sign_in_checks()
+    coordinator.web_sign_in.async_start()
     return True
-
-
-async def _async_options_updated(hass: HomeAssistant, entry: ParcelConfigEntry) -> None:
-    """Apply changed options by reloading the account."""
-    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ParcelConfigEntry) -> bool:
@@ -111,8 +107,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ParcelConfigEntry) -> b
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ParcelConfigEntry) -> None:
-    """Delete what was stored for a removed account."""
+    """Delete what was stored for a removed account, and its repair notices."""
     await ParcelStorage(hass, entry.entry_id).async_remove()
+    async_clear_issues(hass, entry.entry_id)
 
 
 __all__ = ["ParcelCoordinator"]

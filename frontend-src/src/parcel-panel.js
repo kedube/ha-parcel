@@ -1,7 +1,35 @@
-// The Packages sidebar panel for the Parcel integration.
+// The Packages sidebar panel for the Parcel integration: how everything is drawn.
+// What is shown is worked out in logic.js.
 import { LitElement, html, nothing, svg } from 'lit';
-import { daysBetween, makeFormat, shiftDay, toDate } from './format.js';
+import { copyText } from './clipboard.js';
+import { makeFormat, toDate } from './format.js';
 import { ICON, ICON_LABELS, itemIconPath } from './icons.js';
+import {
+  EXTRA,
+  FOCUSABLE,
+  GROUPS,
+  ORDER,
+  PICKUP_STAGES,
+  STAGES,
+  ago,
+  badgeOf,
+  carrierOptions,
+  cleanNumber,
+  compileRules,
+  detectCarriers,
+  etaFor,
+  grouped,
+  guessIcon,
+  heroModel,
+  matches,
+  metaOf,
+  normalizePayload,
+  reasonOf,
+  roadLayout,
+  statusOf,
+  trapFocus,
+  whenText,
+} from './logic.js';
 import { styles } from './styles.js';
 
 const DELETE_HELP_URL = 'https://github.com/kedube/ha-parcel#let-home-assistant-delete-packages';
@@ -9,54 +37,6 @@ const DELETE_HELP_URL = 'https://github.com/kedube/ha-parcel#let-home-assistant-
 const uiIcon = (path, cls = '') =>
   html`<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d=${path}></path></svg>`;
 const itemIcon = (name, cls = '') => uiIcon(itemIconPath(name), cls);
-
-// Parcel's status codes, in friendlier words.
-const STATUS = {
-  0: { key: 'delivered', label: 'Delivered', icon: ICON.delivered, color: '--st-delivered', stage: 3 },
-  1: { key: 'stalled', label: 'No recent updates', icon: ICON.stalled, color: '--st-muted', stage: 1, attn: true },
-  2: { key: 'transit', label: 'On the way', icon: ICON.inTransit, color: '--st-transit', stage: 1 },
-  3: { key: 'pickup', label: 'Ready for pickup', icon: ICON.pickup, color: '--st-pickup', stage: 2 },
-  4: { key: 'out', label: 'Out for delivery', icon: ICON.outForDelivery, color: '--st-out', stage: 2 },
-  5: { key: 'notfound', label: 'Not found yet', icon: ICON.notFound, color: '--st-muted', stage: 0 },
-  6: { key: 'failed', label: 'Missed delivery', icon: ICON.missed, color: '--st-failed', stage: 2, attn: true },
-  7: { key: 'exception', label: 'Delivery problem', icon: ICON.alert, color: '--st-attention', stage: 1, attn: true },
-  8: { key: 'pre', label: 'Label created', icon: ICON.labelCreated, color: '--st-pre', stage: 0 },
-};
-const PENDING = { key: 'pending', label: 'Waiting for first update', icon: ICON.waiting, color: '--st-muted', stage: -1 };
-const STAGES = [
-  { label: 'Label created', icon: ICON.labelCreated },
-  { label: 'On the way', icon: ICON.inTransit },
-  { label: 'Out for delivery', icon: ICON.outForDelivery },
-  { label: 'Delivered', icon: ICON.home },
-];
-const PICKUP_STAGES = [STAGES[0], STAGES[1], { label: 'Ready for pickup', icon: ICON.pickup }, { label: 'Picked up', icon: ICON.delivered }];
-
-const GROUPS = {
-  new: { title: 'Just added' },
-  pickup: { title: 'Ready for pickup', sub: () => 'Waiting for you' },
-  today: { title: 'Today', sub: (v) => v.fmt.longDate(v.today) },
-  late: { title: 'Running late', sub: () => 'Expected earlier' },
-  tomorrow: { title: 'Tomorrow', sub: (v) => v.fmt.longDate(shiftDay(v.today, 1)) },
-  week: { title: 'Later this week' },
-  later: { title: 'Coming later' },
-  nodate: { title: 'No delivery date yet' },
-  delivered: { title: 'Delivered', sub: () => 'Recently' },
-};
-const ORDER = ['new', 'pickup', 'today', 'late', 'tomorrow', 'week', 'later', 'nodate', 'delivered'];
-const LATER_GROUPS = ['new', 'late', 'tomorrow', 'week', 'later', 'nodate'];
-
-// What some carriers need besides the number, keyed by "extra" in Parcel's carrier list.
-const EXTRA = {
-  1: { label: 'Postcode', type: 'text', placeholder: 'Destination postcode', autocomplete: 'postal-code' },
-  2: { label: 'Email used for the order', type: 'email', placeholder: 'you@example.com', autocomplete: 'email', number: 'Order number' },
-  3: { label: 'PIN', type: 'text', placeholder: 'PIN from the shipping notice', autocomplete: 'off' },
-  4: { label: 'Phone number', type: 'tel', placeholder: 'Phone number on the order', autocomplete: 'tel' },
-  5: { label: 'Country code and postcode', type: 'text', placeholder: 'US12345', autocomplete: 'off' },
-};
-
-const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
-const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
-const cleanNumber = (s) => s.replace(/[\s-]/g, '').toUpperCase();
 
 function ensureFonts(base) {
   if (document.getElementById('parcel-panel-fonts')) return;
@@ -132,9 +112,12 @@ class ParcelPackagesPanel extends LitElement {
     window.addEventListener('keydown', this._onKey);
     window.addEventListener('click', this._onDocClick);
     this._timer = setInterval(() => {
+      // Keeps "updated 3 min ago" and the timeline current, and tries the
+      // connection again if subscribing failed (for example while Parcel was loading).
       this._tick += 1;
+      this._subscribe();
     }, 30000);
-    if (this.hass) this._subscribe();
+    this._subscribe();
   }
 
   disconnectedCallback() {
@@ -142,6 +125,7 @@ class ParcelPackagesPanel extends LitElement {
     window.removeEventListener('keydown', this._onKey);
     window.removeEventListener('click', this._onDocClick);
     clearInterval(this._timer);
+    clearTimeout(this._toastTimer);
     this._unsubscribe();
   }
 
@@ -162,27 +146,25 @@ class ParcelPackagesPanel extends LitElement {
 
   willUpdate(changed) {
     if (!this._fmt || changed.has('hass')) this._fmt = makeFormat(this.hass);
+    if (changed.has('panel')) this._iconRules = compileRules(this.panel?.config?.icon_rules);
     if (changed.has('_payload')) {
-      this._items = this._normalize(this._payload);
-      this._iconRules = (this._payload?.icon_rules || []).flatMap((rule) => {
-        try {
-          return [{ re: new RegExp(rule.pattern, 'i'), icon: rule.icon }];
-        } catch {
-          return [];
-        }
-      });
+      this._items = normalizePayload(this._payload);
+      // A package that has gone (deleted elsewhere, or delivered long ago) closes what was open for it.
+      const uids = new Set(this._items.map((d) => d.uid));
+      if (this._selectedUid && !uids.has(this._selectedUid)) this._selectedUid = null;
+      if (this._menuFor && !uids.has(this._menuFor)) this._menuFor = null;
     }
   }
 
   updated(changed) {
     if (changed.has('hass')) {
       this.toggleAttribute('dark', Boolean(this.hass?.themes?.darkMode));
-      if (this.hass && !this._unsub && this.isConnected) this._subscribe();
+      this._subscribe();
     }
   }
 
   _subscribe() {
-    if (this._unsub) return;
+    if (this._unsub || !this.hass || !this.isConnected) return;
     this._unsub = this.hass.connection
       .subscribeMessage((payload) => {
         this._subError = '';
@@ -200,165 +182,39 @@ class ParcelPackagesPanel extends LitElement {
     this._unsub = undefined;
   }
 
-  // ---------------------------------------------------------------- data
-
-  _normalize(payload) {
-    const items = [];
-    for (const entry of payload?.entries || []) {
-      const common = { entryId: entry.entry_id, entryTitle: entry.title, canDelete: entry.can_delete };
-      for (const d of entry.deliveries || []) {
-        items.push({
-          ...common,
-          uid: `${entry.entry_id}|${d.key}`,
-          key: d.key,
-          pending: false,
-          description: d.description,
-          trackingNumber: d.tracking_number,
-          carrierCode: d.carrier_code,
-          carrierName: d.carrier_name,
-          carrierShort: d.carrier_short,
-          statusCode: d.status_code,
-          etaStart: toDate(d.eta_start),
-          etaEnd: toDate(d.eta_end),
-          etaDate: d.eta_date || null,
-          deliveredAt: toDate(d.delivered_at),
-          events: (d.events || []).map((e) => ({
-            text: e.event,
-            when: toDate(e.date),
-            whenText: e.date_text,
-            location: e.location,
-            additional: e.additional,
-          })),
-          icon: d.icon,
-          iconSource: d.icon_source,
-        });
-      }
-      for (const p of entry.pending || []) {
-        items.push({
-          ...common,
-          uid: `${entry.entry_id}|${p.key}`,
-          key: p.key,
-          pending: true,
-          description: p.description,
-          trackingNumber: p.tracking_number,
-          carrierCode: p.carrier_code,
-          carrierName: p.carrier_name,
-          carrierShort: p.carrier_short,
-          statusCode: null,
-          etaStart: null,
-          etaEnd: null,
-          etaDate: null,
-          deliveredAt: null,
-          events: [],
-          icon: p.icon,
-          iconSource: p.icon_source,
-          addedAt: toDate(p.added_at),
-        });
-      }
-    }
-    return items;
-  }
-
   get _entries() {
     return this._payload?.entries || [];
   }
 
-  _statusOf(d) {
-    return d.pending ? PENDING : STATUS[d.statusCode] || STATUS[2];
+  get _iconChoices() {
+    return this.panel?.config?.icon_choices || [];
   }
 
-  _dayKey(d) {
-    if (d.etaDate) return d.etaDate;
-    const when = d.etaStart || d.etaEnd;
-    return when ? this._fmt.ymd(when) : null;
-  }
+  // ---------------------------------------------------------------- keyboard
 
-  _sortTime(d) {
-    if (d.etaStart || d.etaEnd) return (d.etaStart || d.etaEnd).getTime();
-    if (d.etaDate) return Date.parse(`${d.etaDate}T00:00:00`);
-    return Infinity;
+  /** The dialog on top, if one is open: Tab stays inside it. */
+  _modal() {
+    if (this._confirmFor) return this.renderRoot.querySelector('.dialog.small');
+    if (this._addOpen) return this.renderRoot.querySelector('form.dialog');
+    if (this._selectedUid) return this.renderRoot.querySelector('.sheet');
+    return null;
   }
-
-  _dayName(ymd, today, long = true) {
-    if (ymd === today) return 'today';
-    if (ymd === shiftDay(today, 1)) return 'tomorrow';
-    if (ymd === shiftDay(today, -1)) return 'yesterday';
-    if (Math.abs(daysBetween(today, ymd)) < 6) return this._fmt.weekday(ymd, long ? 'long' : 'short');
-    return this._fmt.shortDate(ymd);
-  }
-
-  _when(date, today) {
-    return `${cap(this._dayName(this._fmt.ymd(date), today, false))}, ${this._fmt.time(date)}`;
-  }
-
-  _ago(date, now) {
-    const m = Math.round((now - date) / 60000);
-    if (m < 1) return 'just now';
-    if (m < 60) return `${m} min ago`;
-    const h = Math.round(m / 60);
-    if (h < 24) return `${h} hr ago`;
-    const days = Math.round(h / 24);
-    return days === 1 ? 'yesterday' : `${days} days ago`;
-  }
-
-  _countdown(target, now) {
-    const m = Math.round((target - now) / 60000);
-    if (m <= 0) return '';
-    if (m < 50) return `In about ${Math.max(5, Math.round(m / 5) * 5)} minutes`;
-    const h = Math.round(m / 60);
-    return h === 1 ? 'In about an hour' : `In about ${h} hours`;
-  }
-
-  _groupOf(d, today) {
-    if (d.pending) return 'new';
-    const st = this._statusOf(d);
-    if (st.key === 'delivered') return 'delivered';
-    if (st.attn) return 'attention';
-    if (st.key === 'pickup') return 'pickup';
-    const day = this._dayKey(d);
-    if (st.key === 'out' || day === today) return 'today';
-    if (!day) return 'nodate';
-    const diff = daysBetween(today, day);
-    if (diff < 0) return 'late';
-    if (diff === 1) return 'tomorrow';
-    if (diff < 6) return 'week';
-    return 'later';
-  }
-
-  _grouped(list, today) {
-    const g = { attention: [] };
-    for (const key of ORDER) g[key] = [];
-    for (const d of list) g[this._groupOf(d, today)].push(d);
-    for (const key of ORDER) {
-      if (key === 'delivered') g[key].sort((a, b) => (b.deliveredAt?.getTime() || 0) - (a.deliveredAt?.getTime() || 0));
-      else g[key].sort((a, b) => this._sortTime(a) - this._sortTime(b));
-    }
-    g.attention.sort((a, b) => this._sortTime(a) - this._sortTime(b));
-    return g;
-  }
-
-  _guessIcon(text) {
-    for (const rule of this._iconRules) if (rule.re.test(text || '')) return rule.icon;
-    return 'mdi:package-variant-closed';
-  }
-
-  _matches(d) {
-    const q = this._query.trim().toLowerCase();
-    if (!q) return true;
-    return (
-      d.description.toLowerCase().includes(q) ||
-      d.trackingNumber.toLowerCase().includes(q.replace(/[\s-]/g, '')) ||
-      (d.carrierName || '').toLowerCase().includes(q)
-    );
-  }
-
-  // ---------------------------------------------------------------- actions
 
   _onKey(e) {
+    if (e.key === 'Tab') {
+      const modal = this._modal();
+      if (!modal) return;
+      const focusables = [...modal.querySelectorAll(FOCUSABLE)].filter((el) => el.getClientRects().length > 0);
+      const next = trapFocus(focusables, this.renderRoot.activeElement, e.shiftKey);
+      if (next || !focusables.length) {
+        e.preventDefault();
+        next?.focus();
+      }
+      return;
+    }
     if (e.key !== 'Escape') return;
-    if (this._confirmFor) {
-      if (!this._deleting) this._confirmFor = null;
-    } else if (this._addOpen && this._form.carrierOpen) this._setForm({ carrierOpen: false });
+    if (this._confirmFor) this._closeConfirm();
+    else if (this._addOpen && this._form.carrierOpen) this._setForm({ carrierOpen: false });
     else if (this._addOpen) this._closeAdd();
     else if (this._selectedUid) this._closeDetails();
     else if (this._menuFor) this._menuFor = null;
@@ -367,6 +223,13 @@ class ParcelPackagesPanel extends LitElement {
       this._searchOpen = false;
     }
   }
+
+  /** Put focus back where it was once the page behind a dialog can take it again. */
+  _restoreFocus(target) {
+    this.updateComplete.then(() => target?.focus?.());
+  }
+
+  // ---------------------------------------------------------------- actions
 
   _toggleSidebar() {
     this.dispatchEvent(new Event('hass-toggle-menu', { bubbles: true, composed: true }));
@@ -381,12 +244,10 @@ class ParcelPackagesPanel extends LitElement {
   }
 
   async _copy(text) {
-    try {
-      await navigator.clipboard.writeText(text);
-      this._showToast('Tracking number copied');
-    } catch {
-      this._showToast(`Couldn't copy automatically. The number is ${text}`);
-    }
+    const focused = this.renderRoot.activeElement;
+    const copied = await copyText(text);
+    focused?.focus?.();
+    this._showToast(copied ? 'Tracking number copied' : `Couldn’t copy automatically. The number is ${text}`);
   }
 
   async _refresh() {
@@ -418,12 +279,21 @@ class ParcelPackagesPanel extends LitElement {
 
   _closeDetails() {
     this._selectedUid = null;
-    this._lastFocus?.focus?.();
+    this._restoreFocus(this._lastFocus);
   }
 
   _askDelete(d) {
+    this._confirmFocus = this.renderRoot.activeElement || document.activeElement;
     this._menuFor = null;
     this._confirmFor = d;
+    // Start on the safe choice.
+    this.updateComplete.then(() => this.renderRoot.querySelector('.dialog.small .btn')?.focus());
+  }
+
+  _closeConfirm() {
+    if (this._deleting) return;
+    this._confirmFor = null;
+    this._restoreFocus(this._confirmFocus);
   }
 
   async _doDelete(d) {
@@ -470,13 +340,7 @@ class ParcelPackagesPanel extends LitElement {
       this._carriers = {
         list: result.carriers || {},
         suggested: result.suggested || [],
-        detect: (result.detect || []).flatMap((rule) => {
-          try {
-            return [{ re: new RegExp(rule.pattern), code: rule.code }];
-          } catch {
-            return [];
-          }
-        }),
+        detect: compileRules(result.detect, ''),
       };
     } catch (err) {
       this._carriers = { list: {}, suggested: [], detect: [], error: err?.message || 'Couldn’t load carriers' };
@@ -494,35 +358,11 @@ class ParcelPackagesPanel extends LitElement {
 
   _closeAdd() {
     this._addOpen = false;
-    this._lastFocus?.focus?.();
-  }
-
-  _detect(number) {
-    if (!this._carriers) return [];
-    const list = this._carriers.list;
-    return [...new Set(this._carriers.detect.filter((r) => r.re.test(number)).map((r) => r.code))].filter((c) => list[c]);
+    this._restoreFocus(this._lastFocus);
   }
 
   _carrierName(code) {
     return this._carriers?.list?.[code]?.name || code.toUpperCase();
-  }
-
-  _carrierOptions(query, detected) {
-    const list = this._carriers?.list || {};
-    const q = query.trim().toLowerCase();
-    const all = Object.entries(list).map(([code, c]) => ({ code, name: c.name }));
-    if (!q) {
-      const topCodes = [...detected, ...(this._carriers?.suggested || []).filter((c) => !detected.includes(c))].filter((c) => list[c]);
-      const top = topCodes.map((code, i) => ({ code, name: list[code].name, heading: i === 0 ? (detected.length ? 'Suggested' : 'Common') : '' }));
-      const rest = all.filter((o) => !topCodes.includes(o.code)).sort((a, b) => a.name.localeCompare(b.name));
-      const shown = rest.slice(0, 40).map((o, i) => ({ ...o, heading: i === 0 ? 'All carriers' : '' }));
-      return { items: [...top, ...shown], more: Math.max(0, rest.length - 40) };
-    }
-    const starts = (o) => (o.name.toLowerCase().startsWith(q) ? 0 : 1);
-    const hits = all
-      .filter((o) => o.name.toLowerCase().includes(q) || o.code.includes(q))
-      .sort((a, b) => starts(a) - starts(b) || a.name.localeCompare(b.name));
-    return { items: hits.slice(0, 50), more: Math.max(0, hits.length - 50) };
   }
 
   _pickCarrier(code) {
@@ -533,17 +373,19 @@ class ParcelPackagesPanel extends LitElement {
   _onComboKey(e, options) {
     const n = options.items.length;
     if (!n) return;
+    const showActive = () =>
+      this.updateComplete.then(() => this.renderRoot.querySelector('.opt[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' }));
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       this._setForm({ active: (this._form.active + 1) % n, carrierOpen: true });
-      this.updateComplete.then(() => this.renderRoot.querySelector('.opt[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' }));
+      showActive();
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       this._setForm({ active: (this._form.active - 1 + n) % n });
-      this.updateComplete.then(() => this.renderRoot.querySelector('.opt[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' }));
+      showActive();
     } else if (e.key === 'Enter' && this._form.carrierOpen) {
       e.preventDefault();
-      this._pickCarrier(options.items[this._form.active].code);
+      this._pickCarrier(options.items[Math.min(this._form.active, n - 1)].code);
     }
   }
 
@@ -583,8 +425,10 @@ class ParcelPackagesPanel extends LitElement {
     const entries = this._entries;
     const updatedAt = entries.map((e) => toDate(e.updated_at)).filter(Boolean).sort((a, b) => b - a)[0];
     const searching = this._query.trim().length > 0;
-    const g = this._grouped(this._items, today);
+    const g = grouped(this._items, today, this._fmt);
     const selected = this._selectedUid ? this._items.find((d) => d.uid === this._selectedUid) : null;
+    // While a dialog is open, the page behind it can't be reached with the keyboard.
+    const behind = Boolean(selected || this._addOpen || this._confirmFor);
 
     let body;
     if (this._subError) body = html`<div class="banner">${uiIcon(ICON.warn)}<span>${this._subError}</span></div>`;
@@ -604,7 +448,7 @@ class ParcelPackagesPanel extends LitElement {
     });
 
     return html`
-      <header class="appbar ${this._searchOpen ? 'searching' : ''}">
+      <header class="appbar ${this._searchOpen ? 'searching' : ''}" ?inert=${behind}>
         <div class="appbar-inner">
           ${showMenu ? html`<button class="icon-btn" aria-label="Show sidebar" @click=${this._toggleSidebar}>${uiIcon(ICON.menu)}</button>` : nothing}
           <h1>Packages</h1>
@@ -617,16 +461,16 @@ class ParcelPackagesPanel extends LitElement {
               </label>`
             : html`<button class="icon-btn" aria-label="Search packages" title="Search packages" @click=${this._openSearch}>${uiIcon(ICON.search)}</button>`}
           ${updatedAt ? html`<span class="updated" title="Home Assistant checks Parcel every few minutes. Parcel allows 20 checks an hour.">
-            ${this._refreshing ? 'Checking…' : `Updated ${this._ago(updatedAt, now)}`}</span>` : nothing}
+            ${this._refreshing ? 'Checking…' : `Updated ${ago(updatedAt, now)}`}</span>` : nothing}
           <button class="icon-btn ${this._refreshing ? 'spin' : ''}" aria-label="Check Parcel for updates" title="Check Parcel for updates" @click=${this._refresh}>${uiIcon(ICON.refresh)}</button>
         </div>
       </header>
-      <main class="main">
+      <main class="main" ?inert=${behind}>
         ${errors.map((e) => html`<div class="banner" role="status">${uiIcon(ICON.warn)}<span>${entries.length > 1 ? `${e.title}: ` : ''}${e.last_error}</span></div>`)}
         ${paused.map((e) => html`<div class="banner info" role="status">${uiIcon(ICON.info)}<span>${entries.length > 1 ? `${e.title}: ` : ''}Parcel asked Home Assistant to slow down. This is the last update it has; it will check again around ${this._fmt.time(toDate(e.paused_until))}.</span></div>`)}
         ${body}
       </main>
-      ${entries.length ? html`<button class="fab" @click=${this._openAdd}>${uiIcon(ICON.plus)}<span>Add package</span></button>` : nothing}
+      ${entries.length ? html`<button class="fab" ?inert=${behind} @click=${this._openAdd}>${uiIcon(ICON.plus)}<span>Add package</span></button>` : nothing}
       ${selected ? this._renderSheet(selected, view) : nothing}
       ${this._addOpen ? this._renderAdd() : nothing}
       ${this._confirmFor ? this._renderConfirm() : nothing}
@@ -644,46 +488,20 @@ class ParcelPackagesPanel extends LitElement {
 
   _renderHero(g, view) {
     const { fmt, today, now } = view;
-    const todays = g.today;
-    const deliveredToday = g.delivered.filter((d) => d.deliveredAt && fmt.ymd(d.deliveredAt) === today);
-    const comingLater = LATER_GROUPS.reduce((n, key) => n + g[key].length, 0);
-
+    const hero = heroModel(g, view);
     let headline;
-    let sub;
-    let color = '--st-out';
-    if (todays.length) {
-      const noun = todays.length === 1 ? 'package' : 'packages';
-      const verb = todays.length === 1 ? 'arrives' : 'arrive';
-      headline = html`<span class="n">${todays.length} ${noun}</span> ${verb} today`;
-      const starts = todays.filter((d) => d.etaStart).map((d) => d.etaStart.getTime());
-      const ends = todays.filter((d) => d.etaEnd || d.etaStart).map((d) => (d.etaEnd || d.etaStart).getTime());
-      if (starts.length && ends.length) sub = `Expected ${fmt.between(new Date(Math.min(...starts)), new Date(Math.max(...ends)))}.`;
-      else if (ends.length) sub = `Expected by ${fmt.time(new Date(Math.max(...ends)))}.`;
-      else sub = 'The carriers haven’t shared delivery times yet.';
-      if (deliveredToday.length) sub += ` ${deliveredToday.length} already delivered today.`;
-    } else if (deliveredToday.length) {
-      color = '--st-delivered';
-      headline = html`<span class="n">Today’s deliveries</span> are in`;
-      sub = `${plural(deliveredToday.length, 'package')} delivered today.`;
-    } else {
-      color = '--st-transit';
-      headline = html`Nothing arriving today`;
-      const next = [...g.tomorrow, ...g.week, ...g.later][0];
-      sub = next ? `Next up: ${next.description}, ${this._dayName(this._dayKey(next), today)}.` : 'Your packages are on their way.';
-    }
+    if (hero.kind === 'today') {
+      const one = hero.count === 1;
+      headline = html`<span class="n">${hero.count} ${one ? 'package' : 'packages'}</span> ${one ? 'arrives' : 'arrive'} today`;
+    } else if (hero.kind === 'delivered') headline = html`<span class="n">Today’s deliveries</span> are in`;
+    else headline = html`Nothing arriving today`;
 
-    const stats = [];
-    if (g.attention.length) stats.push({ n: g.attention.length, label: g.attention.length === 1 ? 'needs a look' : 'need a look', color: '--st-attention', target: 'sec-attention' });
-    if (g.pickup.length) stats.push({ n: g.pickup.length, label: 'to pick up', color: '--st-pickup', target: 'sec-pickup' });
-    if (comingLater) stats.push({ n: comingLater, label: 'coming later', color: '--st-transit', target: `sec-${LATER_GROUPS.find((k) => g[k].length)}` });
-    if (deliveredToday.length) stats.push({ n: deliveredToday.length, label: 'delivered today', color: '--st-delivered', target: 'sec-delivered' });
-
-    return html`<section class="hero" aria-labelledby="hero-h" style="--c: var(${color})">
+    return html`<section class="hero" aria-labelledby="hero-h" style="--c: var(${hero.color})">
       <div class="hero-top">
         <div>
           <div class="greet">${this._greeting(now)}</div>
           <h2 class="hero-h" id="hero-h">${headline}</h2>
-          <p class="hero-sub">${sub}</p>
+          <p class="hero-sub">${hero.sub}</p>
         </div>
         <div class="cal" aria-hidden="true">
           <span class="dow">${fmt.weekday(today, 'short')}</span>
@@ -691,116 +509,45 @@ class ParcelPackagesPanel extends LitElement {
           <span class="mon">${fmt.monthShort(today)}</span>
         </div>
       </div>
-      ${this._renderRoad(todays, deliveredToday, view)}
-      ${stats.length
-        ? html`<div class="hero-stats">${stats.map((s) => html`
+      ${this._renderRoad(hero.todays, hero.deliveredToday, view)}
+      ${hero.stats.length
+        ? html`<div class="hero-stats">${hero.stats.map((s) => html`
             <button class="stat" style="--c: var(${s.color})" @click=${() => this._scrollTo(s.target)}><span class="sn">${s.n}</span>${s.label}</button>`)}</div>`
         : nothing}
     </section>`;
   }
 
   _renderRoad(todays, deliveredToday, view) {
-    const { fmt, today, now } = view;
-    const nowH = fmt.hours(now);
-    const clampH = (date) => {
-      const key = fmt.ymd(date);
-      if (key < today) return 0;
-      if (key > today) return 24;
-      return fmt.hours(date);
-    };
-    const pins = [];
-    const anytime = [];
-    for (const d of todays) {
-      const st = this._statusOf(d);
-      if (!d.etaStart && !d.etaEnd) {
-        anytime.push(d);
-        continue;
-      }
-      const end = d.etaEnd ? clampH(d.etaEnd) : Math.min(24, clampH(d.etaStart) + 2);
-      let start = d.etaStart ? clampH(d.etaStart) : Math.min(nowH, end - 0.5);
-      if (start > end - 0.25) start = Math.max(0, end - 0.5);
-      const label = d.etaStart && d.etaEnd ? fmt.window(d.etaStart, d.etaEnd) : d.etaEnd ? `by ${fmt.time(d.etaEnd)}` : `from ${fmt.time(d.etaStart)}`;
-      pins.push({ d, st, start, end, at: (start + end) / 2, label });
-    }
-    for (const d of deliveredToday) {
-      const h = fmt.hours(d.deliveredAt);
-      pins.push({ d, st: this._statusOf(d), start: h, end: h, at: h, label: `delivered ${fmt.time(d.deliveredAt)}`, done: true });
-    }
-    if (!pins.length && !anytime.length) return nothing;
-
-    let a = 8;
-    let b = 20;
-    for (const p of pins) {
-      a = Math.min(a, Math.floor(p.start));
-      b = Math.max(b, Math.ceil(p.end));
-    }
-    a = Math.max(0, Math.min(a, Math.floor(nowH)));
-    b = Math.min(24, Math.max(b, Math.ceil(nowH)));
-    if ((b - a) % 2) {
-      if (b < 24) b += 1;
-      else a -= 1;
-    }
-    const pct = (h) => Math.min(100, Math.max(0, ((h - a) / (b - a)) * 100));
-
-    // Stack nearby stops into up to three lanes so their icons don't collide.
-    pins.sort((x, y) => x.at - y.at);
-    const laneEnds = [];
-    const gap = (b - a) * 0.075;
-    for (const p of pins) {
-      let lane = laneEnds.findIndex((last) => p.at - last >= gap);
-      if (lane === -1) lane = laneEnds.length < 3 ? laneEnds.length : laneEnds.indexOf(Math.min(...laneEnds));
-      laneEnds[lane] = p.at;
-      p.lane = lane;
-    }
-    const ticks = [];
-    for (let h = a; h <= b; h += 2) ticks.push(h);
-
-    return html`<div class="road-wrap" style="--lanes: ${Math.max(1, laneEnds.length)}">
+    const road = roadLayout(todays, deliveredToday, view);
+    if (!road) return nothing;
+    const { pins, anytime } = road;
+    return html`<div class="road-wrap" style="--lanes: ${road.lanes}">
       ${pins.length
         ? html`
           <div class="pins">
-            ${pins.map((p) => {
-              const x = pct(p.at);
-              return html`<button class="pin ${x < 14 ? 'edge-l' : x > 86 ? 'edge-r' : ''} ${p.done ? 'done' : ''}"
-                  style="left: ${x}%; --lane: ${p.lane}; --c: var(${p.st.color})" aria-label="${p.d.description}, ${p.label}"
-                  @click=${() => this._openDetails(p.d)}>
-                <span class="tip">${p.d.description} · ${p.label}</span>
-                <span class="pin-av">${itemIcon(p.d.icon)}${p.done ? html`<span class="pin-check">${uiIcon(ICON.check, 'xxs')}</span>` : nothing}</span>
-                <span class="stem"></span>
-              </button>`;
-            })}
+            ${pins.map((p) => html`<button class="pin ${p.x < 14 ? 'edge-l' : p.x > 86 ? 'edge-r' : ''} ${p.done ? 'done' : ''}"
+                style="left: ${p.x}%; --lane: ${p.lane}; --c: var(${p.st.color})" aria-label="${p.d.description}, ${p.label}"
+                @click=${() => this._openDetails(p.d)}>
+              <span class="tip">${p.d.description} · ${p.label}</span>
+              <span class="pin-av">${itemIcon(p.d.icon)}${p.done ? html`<span class="pin-check">${uiIcon(ICON.check, 'xxs')}</span>` : nothing}</span>
+              <span class="stem"></span>
+            </button>`)}
           </div>
           <div class="road" aria-hidden="true">
-            ${pins.filter((p) => !p.done).map((p) => html`<span class="band" style="left: ${pct(p.start)}%; width: ${Math.max(pct(p.end) - pct(p.start), 1.5)}%; --c: var(${p.st.color})"></span>`)}
-            <span class="now-truck" style="left: ${pct(nowH)}%" title="Now, ${fmt.time(now)}">${uiIcon(ICON.truckNow, 'xs')}</span>
+            ${road.bands.map((b) => html`<span class="band" style="left: ${b.left}%; width: ${b.width}%; --c: var(${b.color})"></span>`)}
+            <span class="now-truck" style="left: ${road.nowLeft}%" title="Now, ${view.fmt.time(view.now)}">${uiIcon(ICON.truckNow, 'xs')}</span>
           </div>
           <div class="hours" aria-hidden="true">
-            ${ticks.map((h) => (Math.abs(h - nowH) < (b - a) * 0.07 ? nothing : html`<span class="tick" style="left: ${pct(h)}%">${fmt.hourLabel(h)}</span>`))}
-            <span class="now-lab" style="left: ${pct(nowH)}%">Now</span>
+            ${road.ticks.map((t) => (t.hidden ? nothing : html`<span class="tick" style="left: ${t.left}%">${t.label}</span>`))}
+            <span class="now-lab" style="left: ${road.nowLeft}%">Now</span>
           </div>`
         : nothing}
       ${anytime.length
         ? html`<div class="anytime"><span class="any-label">Any time today:</span>
-            ${anytime.map((d) => html`<button class="any-chip" style="--c: var(${this._statusOf(d).color})" @click=${() => this._openDetails(d)}>
+            ${anytime.map((d) => html`<button class="any-chip" style="--c: var(${statusOf(d).color})" @click=${() => this._openDetails(d)}>
               <span class="any-av">${itemIcon(d.icon, 'xs')}</span><span class="any-name">${d.description}</span></button>`)}</div>`
         : nothing}
     </div>`;
-  }
-
-  _reasonOf(d, st, view) {
-    const last = d.events[0];
-    const carrier = d.carrierShort || d.carrierName;
-    if (st.key === 'failed') {
-      const nextDay = this._dayKey(d);
-      const retry = nextDay
-        ? `${carrier} will try again ${this._dayName(nextDay, view.today)}${d.etaStart && d.etaEnd ? `, ${view.fmt.window(d.etaStart, d.etaEnd)}` : ''}.`
-        : `Check with ${carrier} about the next attempt.`;
-      const why = last?.additional ? `${last.additional.split('. ')[0].replace(/\.$/, '')}. ` : '';
-      return { title: 'Missed delivery', hint: `${why}${retry}` };
-    }
-    if (st.key === 'exception') return { title: last?.text || 'Delivery problem', hint: last?.additional || `Check with ${carrier} for details.` };
-    if (st.key === 'stalled') return { title: 'No updates for a while', hint: last?.when ? `Last update ${this._ago(last.when, view.now)}.` : `Check with ${carrier} if it seems late.` };
-    return { title: st.label, hint: '' };
   }
 
   _renderAttention(list, view) {
@@ -812,8 +559,8 @@ class ParcelPackagesPanel extends LitElement {
           <p>Something changed that you may want to act on.</p></div>
       </div>
       ${list.map((d) => {
-        const st = this._statusOf(d);
-        const r = this._reasonOf(d, st, view);
+        const st = statusOf(d);
+        const r = reasonOf(d, st, view);
         return html`<button class="att-row" style="--c: var(${st.color})" @click=${() => this._openDetails(d)}>
           <span class="att-av">${itemIcon(d.icon)}</span>
           <span class="att-text"><span class="att-name">${d.description}</span><span class="att-reason">${r.title}</span>${r.hint ? html`<span class="att-hint">${r.hint}</span>` : nothing}</span>
@@ -833,7 +580,7 @@ class ParcelPackagesPanel extends LitElement {
   }
 
   _renderResults(view) {
-    const list = this._items.filter((d) => this._matches(d));
+    const list = this._items.filter((d) => matches(d, this._query));
     if (!list.length) {
       return html`<div class="no-match">${uiIcon(ICON.search)}<p>No packages match “${this._query}”.</p>
         <button class="btn text" @click=${() => { this._query = ''; }}>Clear search</button></div>`;
@@ -859,53 +606,21 @@ class ParcelPackagesPanel extends LitElement {
     </span>`;
   }
 
-  _badgeOf(d, st, view) {
-    const { fmt, today } = view;
-    if (d.pending) return { main: 'New', sub: 'just added' };
-    if (st.key === 'delivered') {
-      if (!d.deliveredAt) return { main: 'Delivered', sub: '' };
-      const day = fmt.ymd(d.deliveredAt);
-      return day === today
-        ? { main: fmt.time(d.deliveredAt), sub: 'today' }
-        : { main: cap(this._dayName(day, today, false)), sub: fmt.time(d.deliveredAt) };
-    }
-    if (st.key === 'pickup') return { main: 'Pick up', sub: 'ready now' };
-    const day = this._dayKey(d);
-    if (!day) return { main: '—', sub: 'no date yet' };
-    const timeText = d.etaStart && d.etaEnd ? fmt.window(d.etaStart, d.etaEnd) : d.etaEnd ? `by ${fmt.time(d.etaEnd)}` : '';
-    const diff = daysBetween(today, day);
-    if (diff === 0) return { main: timeText || 'Today', sub: timeText ? 'today' : 'any time' };
-    if (diff < 0) return { main: 'Late', sub: `was due ${fmt.monthDay(day)}` };
-    if (diff === 1) return { main: 'Tomorrow', sub: timeText };
-    if (diff < 6) return { main: fmt.weekday(day, 'short'), sub: fmt.monthDay(day) };
-    return { main: fmt.monthDay(day), sub: fmt.weekday(day, 'short') };
-  }
-
-  _metaOf(d, view) {
-    const last = d.events[0];
-    const parts = [d.carrierShort || d.carrierName];
-    if (d.pending) parts.push('Parcel will check in a few minutes');
-    else if (last?.location) parts.push(last.location);
-    else if (last?.text && last.text.toLowerCase() !== this._statusOf(d).label.toLowerCase()) parts.push(last.text);
-    if (!d.pending && last?.when) parts.push(this._ago(last.when, view.now));
-    return parts.filter(Boolean).join(' · ');
-  }
-
   _renderCard(d, view) {
-    const st = this._statusOf(d);
-    const b = this._badgeOf(d, st, view);
+    const st = statusOf(d);
+    const b = badgeOf(d, st, view);
     const menuOpen = this._menuFor === d.uid;
-    const open = () => this._openDetails(d);
-    return html`<article class="pkg ${st.key} ${menuOpen ? 'menu-open' : ''}" style="--c: var(${st.color})" tabindex="0" role="button"
-        aria-label="${d.description}: ${st.label}. ${b.main} ${b.sub}. Show details"
-        @click=${open} @keydown=${(e) => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); open(); } }}>
-      ${this._renderRing(d, st)}
-      <div class="pkg-main">
-        <span class="pkg-name">${d.description}</span>
-        <span class="pkg-status">${uiIcon(st.icon, 'xs')}${st.label}</span>
-        <span class="pkg-meta">${this._metaOf(d, view)}</span>
-      </div>
-      <div class="when"><span class="when-main">${b.main}</span>${b.sub ? html`<span class="when-sub">${b.sub}</span>` : nothing}</div>
+    // The card holds two controls side by side: one opens the details, one opens the menu.
+    return html`<article class="pkg ${st.key} ${menuOpen ? 'menu-open' : ''}" style="--c: var(${st.color})">
+      <button class="pkg-open" aria-label="${d.description}: ${st.label}. ${b.main} ${b.sub}. Show details" @click=${() => this._openDetails(d)}>
+        ${this._renderRing(d, st)}
+        <span class="pkg-main">
+          <span class="pkg-name">${d.description}</span>
+          <span class="pkg-status">${uiIcon(ICON[st.icon], 'xs')}${st.label}</span>
+          <span class="pkg-meta">${metaOf(d, view)}</span>
+        </span>
+        <span class="when"><span class="when-main">${b.main}</span>${b.sub ? html`<span class="when-sub">${b.sub}</span>` : nothing}</span>
+      </button>
       <button class="icon-btn kebab" aria-label="More for ${d.description}" aria-haspopup="menu" aria-expanded=${String(menuOpen)}
         @click=${(e) => { e.stopPropagation(); this._menuFor = menuOpen ? null : d.uid; }}>${uiIcon(ICON.more, 'sm')}</button>
       ${menuOpen
@@ -918,56 +633,23 @@ class ParcelPackagesPanel extends LitElement {
     </article>`;
   }
 
-  _etaFor(d, st, view) {
-    const { fmt, today, now } = view;
-    if (d.pending) return { main: 'Waiting for the first update', sub: 'Parcel will check with the carrier in a few minutes.' };
-    if (st.key === 'delivered') {
-      if (!d.deliveredAt) return { main: 'Delivered', sub: d.events[0]?.location || '' };
-      const loc = d.events[0]?.location;
-      return {
-        main: `Delivered ${this._dayName(fmt.ymd(d.deliveredAt), today)}`,
-        sub: `At ${fmt.time(d.deliveredAt)}${loc ? ` · ${loc}` : ''}`,
-        note: d.events[0]?.additional || '',
-      };
-    }
-    if (st.key === 'pickup') return { main: 'Ready for pickup', sub: d.events[0]?.location || '', note: d.events[0]?.additional || '' };
-    if (st.attn) {
-      const r = this._reasonOf(d, st, view);
-      return { main: r.title, sub: r.hint };
-    }
-    const day = this._dayKey(d);
-    if (!day) return { main: 'No delivery date yet', sub: 'The carrier hasn’t shared an estimate.' };
-    let sub = '';
-    if (d.etaStart && d.etaEnd) sub = cap(fmt.between(d.etaStart, d.etaEnd));
-    else if (d.etaEnd) sub = `By ${fmt.time(d.etaEnd)}`;
-    else if (st.key === 'pre') sub = 'The carrier doesn’t have the package yet.';
-    else if (day === today) sub = 'No time window from the carrier.';
-    let note = '';
-    if (d.etaStart && fmt.ymd(d.etaStart) === today) {
-      note = d.etaStart <= now && (!d.etaEnd || now <= d.etaEnd) ? 'Could arrive any minute' : this._countdown(d.etaStart, now);
-    }
-    const late = daysBetween(today, day) < 0;
-    return { main: late ? `Expected ${this._dayName(day, today)}` : `Arriving ${this._dayName(day, today)}`, sub: late ? 'Running late. The carrier hasn’t updated the date.' : sub, note };
-  }
-
   _renderSheet(d, view) {
-    const st = this._statusOf(d);
-    const eta = this._etaFor(d, st, view);
+    const st = statusOf(d);
+    const eta = etaFor(d, st, view);
     const stages = st.key === 'pickup' ? PICKUP_STAGES : STAGES;
     const cur = st.stage;
     const events = this._showAllEvents ? d.events : d.events.slice(0, 3);
     const multiple = this._entries.length > 1;
-    const choices = this._payload?.icon_choices || [];
     return html`
       <div class="scrim" @click=${this._closeDetails}></div>
-      <aside class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" style="--c: var(${st.color})">
+      <aside class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" style="--c: var(${st.color})" ?inert=${Boolean(this._confirmFor)}>
         <div class="sheet-bar"><span class="grab" aria-hidden="true"></span>
           <button class="icon-btn" aria-label="Close" @click=${this._closeDetails}>${uiIcon(ICON.close)}</button></div>
         <div class="sheet-body">
           <div class="sheet-hero">
             ${this._renderRing(d, st, 'lg')}
             <h2 id="sheet-title">${d.description}</h2>
-            <span class="pill">${uiIcon(st.icon, 'xs')}${st.label}</span>
+            <span class="pill">${uiIcon(ICON[st.icon], 'xs')}${st.label}</span>
           </div>
           <div class="eta-card">
             <span class="em">${eta.main}</span>
@@ -976,13 +658,13 @@ class ParcelPackagesPanel extends LitElement {
           </div>
           <ol class="journey" aria-label="Delivery progress">${stages.map(
             (s, i) => html`<li class="j ${i < cur || st.key === 'delivered' ? 'done' : ''} ${i === cur && st.key !== 'delivered' ? 'cur' : ''}">
-              <span class="ji">${uiIcon(s.icon, 'sm')}</span><span>${s.label}</span></li>`,
+              <span class="ji">${uiIcon(ICON[s.icon], 'sm')}</span><span>${s.label}</span></li>`,
           )}</ol>
           <section>
             <h3 class="sec-h">Updates</h3>
             ${d.events.length
               ? html`<ol class="timeline">${events.map((e) => {
-                  const meta = [e.location, e.when ? this._when(e.when, view.today) : e.whenText].filter(Boolean).join(' · ');
+                  const meta = [e.location, e.when ? whenText(view.fmt, e.when, view.today) : e.whenText].filter(Boolean).join(' · ');
                   return html`<li class="ev"><span class="b"></span><div>
                     <div class="e">${e.text}</div>
                     ${meta ? html`<div class="m">${meta}</div>` : nothing}
@@ -1005,7 +687,7 @@ class ParcelPackagesPanel extends LitElement {
             </div>
             ${this._iconsOpen
               ? html`<div class="icon-row" role="group" aria-label="Choose an icon" style="margin-top: 12px">
-                  ${choices.map((name) => html`<button class="ic-choice" aria-pressed=${String(name === d.icon)} aria-label=${ICON_LABELS[name] || name} title=${ICON_LABELS[name] || name}
+                  ${this._iconChoices.map((name) => html`<button class="ic-choice" aria-pressed=${String(name === d.icon)} aria-label=${ICON_LABELS[name] || name} title=${ICON_LABELS[name] || name}
                     @click=${() => this._setIcon(d, name)}>${itemIcon(name, 'sm')}</button>`)}
                   ${d.iconSource === 'user' ? html`<button class="btn text sm" @click=${() => this._setIcon(d, null)}>Match the name again</button>` : nothing}
                 </div>`
@@ -1021,26 +703,23 @@ class ParcelPackagesPanel extends LitElement {
 
   _renderConfirm() {
     const d = this._confirmFor;
-    const close = () => {
-      if (!this._deleting) this._confirmFor = null;
-    };
     if (!d.canDelete) {
-      return html`<div class="scrim top" @click=${close}></div>
+      return html`<div class="scrim top" @click=${this._closeConfirm}></div>
         <div class="dialog small" role="alertdialog" aria-modal="true" aria-labelledby="cf-title">
           <span class="cf-ic info">${uiIcon(ICON.info)}</span>
           <h2 id="cf-title">Connect your Parcel sign-in</h2>
           <p>Parcel’s API can’t delete packages, so Home Assistant uses your Parcel web sign-in for this. Add it once under Settings › Devices &amp; services › Parcel › Configure.
             <a href=${DELETE_HELP_URL} target="_blank" rel="noreferrer">How to find it</a></p>
-          <div class="actions"><button class="btn filled" @click=${close}>Got it</button></div>
+          <div class="actions"><button class="btn filled" @click=${this._closeConfirm}>Got it</button></div>
         </div>`;
     }
-    return html`<div class="scrim top" @click=${close}></div>
+    return html`<div class="scrim top" @click=${this._closeConfirm}></div>
       <div class="dialog small" role="alertdialog" aria-modal="true" aria-labelledby="cf-title">
         <span class="cf-ic">${uiIcon(ICON.delete)}</span>
         <h2 id="cf-title">Delete “${d.description}”?</h2>
         <p>It will be removed from Parcel on all your devices. This can’t be undone.</p>
         <div class="actions">
-          <button class="btn text" ?disabled=${this._deleting} @click=${close}>Cancel</button>
+          <button class="btn text" ?disabled=${this._deleting} @click=${this._closeConfirm}>Cancel</button>
           <button class="btn danger" ?disabled=${this._deleting} @click=${() => this._doDelete(d)}>${this._deleting ? 'Deleting…' : 'Delete'}</button>
         </div>
       </div>`;
@@ -1056,7 +735,7 @@ class ParcelPackagesPanel extends LitElement {
   }
 
   _renderCarrierCombo(f, detected, info) {
-    const options = this._carrierOptions(f.carrierQuery, detected);
+    const options = carrierOptions(this._carriers, f.carrierQuery, detected);
     const total = Object.keys(this._carriers?.list || {}).length;
     return html`<div class="field">
       <label for="f-carrier">Carrier</label>
@@ -1088,15 +767,15 @@ class ParcelPackagesPanel extends LitElement {
     const f = this._form;
     const entries = this._entries;
     const number = cleanNumber(f.number);
-    const detected = number.length >= 6 ? this._detect(number) : [];
+    const detected = number.length >= 6 ? detectCarriers(this._carriers, number) : [];
     const carrier = f.carrier || detected[0] || '';
     const list = this._carriers?.list || {};
     const info = list[carrier];
     const extra = info?.extra ? EXTRA[info.extra] || EXTRA[1] : null;
     const mismatch = Boolean(f.carrier && detected.length && !detected.includes(f.carrier));
-    const guessed = this._guessIcon(f.description);
+    const guessed = guessIcon(this._iconRules, f.description);
     const chosenIcon = f.icon || guessed;
-    const choices = [guessed, ...(this._payload?.icon_choices || []).filter((c) => c !== guessed)].slice(0, 9);
+    const choices = [guessed, ...this._iconChoices.filter((c) => c !== guessed)].slice(0, 9);
     if (f.icon && !choices.includes(f.icon)) choices[choices.length - 1] = f.icon;
     const entry = entries.find((e) => e.entry_id === f.entryId) || entries[0];
     const addsLeft = entry?.adds_left ?? 20;
@@ -1116,7 +795,7 @@ class ParcelPackagesPanel extends LitElement {
           ${entries.length > 1
             ? html`<div class="field"><label for="f-entry">Parcel account</label>
                 <select id="f-entry" class="input" .value=${entry?.entry_id || ''} @change=${(e) => this._setForm({ entryId: e.target.value })}>
-                  ${entries.map((e) => html`<option value=${e.entry_id}>${e.title}</option>`)}
+                  ${entries.map((e) => html`<option value=${e.entry_id} ?selected=${e.entry_id === entry?.entry_id}>${e.title}</option>`)}
                 </select></div>`
             : nothing}
           <div class="field">

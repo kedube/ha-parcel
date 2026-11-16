@@ -242,11 +242,16 @@ export const styles = css`
   .gsub { font-size: 13px; color: var(--pp-text2); }
   .gcount { margin-left: auto; padding: 4px 10px; border-radius: 999px; background: var(--pp-surface2); font-size: 12px; font-weight: 500; color: var(--pp-text2); font-variant-numeric: tabular-nums; }
   .cards { display: grid; gap: 10px; }
+  /* A card holds two controls side by side: the package itself (opens details) and its menu. */
   .pkg {
-    position: relative; display: grid; grid-template-columns: 56px minmax(0, 1fr) auto 36px; align-items: center; gap: 4px 14px;
-    padding: 14px 6px 14px 16px; border-radius: var(--r-md);
+    position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 36px; align-items: center; column-gap: 14px;
+    padding-right: 6px; border-radius: var(--r-md);
     background: var(--pp-card); border: 1px solid var(--pp-card-line); box-shadow: var(--pp-shadow-1);
-    cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .pkg-open {
+    display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; align-items: center; gap: 4px 14px; min-width: 0;
+    padding: 14px 0 14px 16px; border: 0; border-radius: var(--r-md); background: none; text-align: left;
   }
   .pkg:hover { transform: translateY(-1px); box-shadow: var(--pp-shadow-2); }
   .pkg.menu-open { z-index: 4; }
@@ -284,7 +289,8 @@ export const styles = css`
   .menu button:hover { background: var(--pp-hover); }
   .menu .danger, .menu .danger .ic { color: var(--st-attention); }
   @media (max-width: 480px) {
-    .pkg { grid-template-columns: 48px minmax(0, 1fr) auto 32px; gap: 2px 10px; padding: 12px 2px 12px 12px; }
+    .pkg { grid-template-columns: minmax(0, 1fr) 32px; column-gap: 10px; padding-right: 2px; }
+    .pkg-open { grid-template-columns: 48px minmax(0, 1fr) auto; gap: 2px 10px; padding: 12px 0 12px 12px; }
     .pkg .ring { width: 48px; height: 48px; }
     .pkg .ring .av { inset: 7px; }
     .pkg .ring .av .ic { width: 20px; height: 20px; }

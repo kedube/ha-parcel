@@ -38,18 +38,21 @@
         "data": {
           "scan_interval": "Check for updates every",
           "package_sensors": "Create a sensor for each package",
-          "account_token": "Parcel web sign-in (for deleting packages)"
+          "account_token": "Parcel web sign-in (for deleting packages)",
+          "remove_account_token": "Remove the saved web sign-in"
         },
         "data_description": {
           "scan_interval": "Parcel allows 20 checks an hour, so 4 minutes is the shortest.",
           "package_sensors": "Each package gets its own sensor, removed two days after delivery. The summary sensors are always there.",
-          "account_token": "Optional. Leave empty to turn deleting off."
+          "account_token": "Optional. Paste a new one to turn deleting on, or to replace the one you saved. A saved sign-in is never shown here, so leave this empty to keep it.",
+          "remove_account_token": "Turns deleting off until you paste a sign-in again."
         }
       }
     },
     "error": {
       "invalid_account_token": "Parcel didn't accept this sign-in. Sign in again at web.parcelapp.net and copy the new account_token.",
       "cannot_connect": "Couldn't reach Parcel. Check the internet connection and try again.",
+      "rate_limited": "Parcel asked Home Assistant to slow down. Try again in a few minutes.",
       "unknown": "Something unexpected happened. The logs have details."
     }
   },
@@ -75,6 +78,9 @@
       },
       "next_delivery": {
         "name": "Next delivery"
+      },
+      "next_delivery_day": {
+        "name": "Next delivery day"
       },
       "package": {
         "state": {
@@ -192,13 +198,13 @@
   },
   "exceptions": {
     "hourly_limit": {
-      "message": "Parcel's limit of 20 checks an hour has been reached. Home Assistant will check again shortly."
+      "message": "Parcel's limit of 20 checks an hour has been reached. Home Assistant will check again in about {minutes} minutes."
     },
     "invalid_api_key": {
       "message": "Parcel didn't accept the API key. If you revoked it, enter the new key."
     },
     "rate_limited": {
-      "message": "Parcel asked Home Assistant to slow down. It will check again in about 20 minutes."
+      "message": "Parcel asked Home Assistant to slow down. It will check again in about {minutes} minutes."
     },
     "update_failed": {
       "message": "Couldn't get updates from Parcel: {error}"
@@ -267,7 +273,7 @@
   "issues": {
     "web_sign_in_expired": {
       "title": "Parcel web sign-in expired",
-      "description": "Home Assistant couldn't delete a package from **{title}** because Parcel no longer accepts the web sign-in. Sign in again at web.parcelapp.net, copy the new `account_token` cookie, and paste it in **Settings › Devices & services › Parcel › Configure**."
+      "description": "Parcel no longer accepts the web sign-in for **{title}**, so Home Assistant can't delete packages from it. Sign in again at web.parcelapp.net, copy the new `account_token` cookie, and paste it in **Settings › Devices & services › Parcel › Configure**."
     },
     "web_sign_in_expiring": {
       "title": "Parcel web sign-in expires soon",

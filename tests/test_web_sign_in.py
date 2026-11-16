@@ -42,7 +42,7 @@ async def test_warns_when_expiry_is_near(hass: HomeAssistant, mock_parcel: Simpl
     """Within two weeks of the 360-day limit, a heads-up appears with days left."""
     entry = entry_with_token_age(WEB_TOKEN_LIFETIME.days - 10)
     await setup(hass, entry)
-    await entry.runtime_data._async_check_web_sign_in()
+    await entry.runtime_data.web_sign_in.async_check()
     issue = ir.async_get(hass).async_get_issue(DOMAIN, f"web_sign_in_expiring_{entry.entry_id}")
     assert issue is not None
     assert issue.translation_placeholders["days"] in {"9", "10"}
@@ -54,7 +54,7 @@ async def test_no_warning_when_plenty_of_time(
     """A fresh token raises nothing."""
     entry = entry_with_token_age(30)
     await setup(hass, entry)
-    await entry.runtime_data._async_check_web_sign_in()
+    await entry.runtime_data.web_sign_in.async_check()
     assert (
         ir.async_get(hass).async_get_issue(DOMAIN, f"web_sign_in_expiring_{entry.entry_id}") is None
     )
@@ -69,12 +69,12 @@ async def test_early_sign_out_detected_and_healed(
     await setup(hass, entry)
     coordinator = entry.runtime_data
     mock_parcel.web_list.side_effect = ParcelWebAuthError("signed out")
-    await coordinator._async_check_web_sign_in()
+    await coordinator.web_sign_in.async_check()
     assert ir.async_get(hass).async_get_issue(DOMAIN, f"web_sign_in_{entry.entry_id}") is not None
 
     mock_parcel.web_list.side_effect = None
     mock_parcel.web_list.return_value = []
-    await coordinator._async_check_web_sign_in()
+    await coordinator.web_sign_in.async_check()
     assert ir.async_get(hass).async_get_issue(DOMAIN, f"web_sign_in_{entry.entry_id}") is None
 
 
@@ -85,10 +85,10 @@ async def test_transient_error_changes_nothing(
     entry = entry_with_token_age(WEB_TOKEN_LIFETIME.days - 10)
     await setup(hass, entry)
     coordinator = entry.runtime_data
-    await coordinator._async_check_web_sign_in()
+    await coordinator.web_sign_in.async_check()
     assert ir.async_get(hass).async_get_issue(DOMAIN, f"web_sign_in_expiring_{entry.entry_id}")
     mock_parcel.web_list.side_effect = ParcelConnectionError("offline")
-    await coordinator._async_check_web_sign_in()
+    await coordinator.web_sign_in.async_check()
     # The warning from the previous successful check is untouched.
     assert ir.async_get(hass).async_get_issue(DOMAIN, f"web_sign_in_expiring_{entry.entry_id}")
 
@@ -99,7 +99,7 @@ async def test_no_checks_without_web_sign_in(
     """With no web sign-in configured, the check does nothing and never touches Parcel."""
     entry = MockConfigEntry(domain=DOMAIN, title="Parcel", data={"api_key": "k"}, options={})
     await setup(hass, entry)
-    await entry.runtime_data._async_check_web_sign_in()
+    await entry.runtime_data.web_sign_in.async_check()
     mock_parcel.web_list.assert_not_called()
 
 

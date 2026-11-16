@@ -26,7 +26,7 @@ API_KEY_DOCS_URL: Final = "https://github.com/kedube/ha-parcel#get-your-parcel-a
 WEB_SIGN_IN_DOCS_URL: Final = (
     "https://github.com/kedube/ha-parcel#let-home-assistant-delete-packages"
 )
-PARCEL_WEB_URL: Final = "https://web.parcelapp.net"
+PARCEL_WEB_URL: Final = WEB_BASE
 
 # Options
 CONF_ACCOUNT_TOKEN: Final = "account_token"
@@ -34,6 +34,8 @@ CONF_ACCOUNT_TOKEN: Final = "account_token"
 CONF_ACCOUNT_TOKEN_SET_AT: Final = "account_token_set_at"
 CONF_SCAN_INTERVAL: Final = "scan_interval"
 CONF_PACKAGE_SENSORS: Final = "package_sensors"
+# Options form only: a switch to forget the saved web sign-in. Never stored.
+CONF_REMOVE_ACCOUNT_TOKEN: Final = "remove_account_token"
 
 # Parcel's web sign-in cookie lasts 360 days (Max-Age=31104000) and isn't renewed
 # on use, so the integration warns ahead of time and re-checks it daily.
@@ -42,7 +44,7 @@ WEB_TOKEN_WARN_AHEAD: Final = timedelta(days=14)
 WEB_SIGN_IN_CHECK_INTERVAL: Final = timedelta(hours=24)
 WEB_SIGN_IN_FIRST_CHECK: Final = timedelta(seconds=30)
 
-DEFAULT_SCAN_MINUTES: Final = 5
+DEFAULT_SCAN_MINUTES: Final = 10
 MIN_SCAN_MINUTES: Final = 4
 MAX_SCAN_MINUTES: Final = 60
 
@@ -52,6 +54,12 @@ MANUAL_REFRESH_RESERVE: Final = 2  # keep a couple of reads for scheduled checks
 MANUAL_REFRESH_MIN_GAP: Final = timedelta(seconds=60)
 ADDS_PER_DAY: Final = 20
 RATE_LIMIT_BACKOFF: Final = timedelta(minutes=20)
+# When a check fails (Parcel unreachable), the last known packages stay on show for
+# this long, or for this many check intervals if that is longer.
+OUTAGE_GRACE: Final = timedelta(minutes=30)
+OUTAGE_GRACE_CHECKS: Final = 3
+# After the carrier list fails to download, wait this long before trying again.
+CARRIER_RETRY_AFTER: Final = timedelta(minutes=10)
 FOLLOW_UP_REFRESH_SECONDS: Final = 120
 
 # How long things are remembered
@@ -61,6 +69,7 @@ DELIVERED_SENSOR_RETENTION: Final = timedelta(days=2)
 CARRIER_LIST_MAX_AGE: Final = timedelta(days=1)
 
 STORAGE_VERSION: Final = 1
+STORAGE_MINOR_VERSION: Final = 1
 
 # Bus event fired for every package change; device triggers listen to it.
 EVENT_PACKAGE_UPDATE: Final = "parcel_package_update"
@@ -97,5 +106,6 @@ STATIC_URL: Final = "/parcel_static"
 # hass.data keys
 DATA_CARRIERS: Final = f"{DOMAIN}_carriers"
 DATA_PANEL: Final = f"{DOMAIN}_panel"
+DATA_PANEL_LOCK: Final = f"{DOMAIN}_panel_lock"
 DATA_STATIC: Final = f"{DOMAIN}_static"
 DATA_SUBSCRIBERS: Final = f"{DOMAIN}_subscribers"

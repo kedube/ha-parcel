@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   tests:
-    name: Lint and tests
+    name: Lint, types and tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -33,6 +33,8 @@ jobs:
         run: |
           ruff check custom_components scripts tests
           ruff format --check custom_components scripts tests
+      - name: Types
+        run: mypy
       - name: Tests
         run: pytest -q
 
@@ -41,29 +43,39 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: home-assistant/actions/hassfest@master
+      # Pinned to a commit so the step itself can't change unnoticed. What it runs is
+      # Home Assistant's current hassfest image, so its rules stay up to date.
+      - uses: home-assistant/actions/hassfest@86d4564712fa02543c808e3a693dd04f9d3f8361 # master, 2026-10-26
 
   hacs:
     name: HACS check
     runs-on: ubuntu-latest
     steps:
       # Includes HACS's brand check, which looks for custom_components/parcel/brand/icon.png.
-      - uses: hacs/action@main
+      # Pinned to a commit like hassfest above; it runs HACS's current checks image.
+      - uses: hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa # main, 2026-06-08
         with:
           category: integration
 
   panel:
-    name: Panel and brand images are up to date
+    name: Panel lint, tests and builds
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
+      - name: Install
+        working-directory: frontend-src
+        run: npm ci --ignore-scripts
+      - name: Lint and tests
+        working-directory: frontend-src
+        run: |
+          npm run lint
+          npm test
       - name: Build the panel and the brand images
         working-directory: frontend-src
         run: |
-          npm ci --ignore-scripts
           npm run build
           npm run brand
       - name: The committed builds match their sources

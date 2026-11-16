@@ -4,15 +4,20 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import logging
+import re
 from typing import Any
 
 import aiohttp
-import voluptuous as vol
+import probatio as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFlow
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlowWithReload,
+)
 from homeassistant.const import CONF_API_KEY
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_create_clientsession, async_get_clientsession
 from homeassistant.helpers.selector import (
     BooleanSelector,
@@ -40,6 +45,7 @@ from .const import (
     CONF_ACCOUNT_TOKEN,
     CONF_ACCOUNT_TOKEN_SET_AT,
     CONF_PACKAGE_SENSORS,
+    CONF_REMOVE_ACCOUNT_TOKEN,
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_MINUTES,
     DOMAIN,
@@ -48,8 +54,13 @@ from .const import (
     PARCEL_WEB_URL,
     WEB_SIGN_IN_DOCS_URL,
 )
+from .web_sign_in import async_clear_issues
 
 _LOGGER = logging.getLogger(__name__)
+
+# A cookie value: visible characters only, none that would end it or start another.
+TOKEN_FORMAT = re.compile(r"[!-~]+")
+TOKEN_FORBIDDEN = frozenset(';," ')
 
 API_KEY_SCHEMA = vol.Schema(
     {vol.Required(CONF_API_KEY): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))}
@@ -74,6 +85,9 @@ async def _check_api_key(hass: HomeAssistant, api_key: str) -> str | None:
 
 async def _check_account_token(hass: HomeAssistant, token: str) -> str | None:
     """Return an error code, or None when Parcel's web app accepts the token."""
+    if not TOKEN_FORMAT.fullmatch(token) or TOKEN_FORBIDDEN & set(token):
+        # Not something a browser would hold in a cookie, so don't send it anywhere.
+        return "invalid_account_token"
     # auto_cleanup=False so this short-lived session is ours to close here, instead
     # of being tied to Home Assistant's shutdown.
     session = async_create_clientsession(
@@ -83,6 +97,8 @@ async def _check_account_token(hass: HomeAssistant, token: str) -> str | None:
         await ParcelWebClient(session, token).async_validate()
     except ParcelWebAuthError:
         return "invalid_account_token"
+    except ParcelRateLimitError:
+        return "rate_limited"
     except ParcelConnectionError:
         return "cannot_connect"
     except ParcelError:
@@ -146,70 +162,72 @@ class ParcelConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: Any) -> ParcelOptionsFlow:
+    def async_get_options_flow(config_entry: ConfigEntry) -> ParcelOptionsFlow:
         """Options: check interval, per-package sensors and the web sign-in."""
         return ParcelOptionsFlow()
 
 
-class ParcelOptionsFlow(OptionsFlow):
-    """Change how Parcel behaves."""
+class ParcelOptionsFlow(OptionsFlowWithReload):
+    """Change how Parcel behaves. Saving a change reloads the account."""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """One page of options."""
         errors: dict[str, str] = {}
         current = self.config_entry.options
+        saved = current.get(CONF_ACCOUNT_TOKEN)
         if user_input is not None:
-            token = normalize_account_token(user_input.get(CONF_ACCOUNT_TOKEN))
-            if (
-                token
-                and token != current.get(CONF_ACCOUNT_TOKEN)
-                and (error := await _check_account_token(self.hass, token))
-            ):
-                errors[CONF_ACCOUNT_TOKEN] = error
+            # The saved sign-in is never shown in the form, so an empty box means
+            # "keep it". It changes only when a new one is pasted or removal is chosen.
+            pasted = normalize_account_token(user_input.get(CONF_ACCOUNT_TOKEN))
+            token = saved
+            set_at = current.get(CONF_ACCOUNT_TOKEN_SET_AT)
+            if pasted and pasted != saved:
+                if error := await _check_account_token(self.hass, pasted):
+                    errors[CONF_ACCOUNT_TOKEN] = error
+                # A fresh token restarts the countdown to its expiry.
+                token, set_at = pasted, dt_util.utcnow().isoformat()
+            elif user_input.get(CONF_REMOVE_ACCOUNT_TOKEN):
+                token, set_at = None, None
+            elif saved and not set_at:
+                set_at = dt_util.utcnow().isoformat()
             if not errors:
-                # A fresh token resets the expiry clock; an unchanged one keeps it.
-                if token and token != current.get(CONF_ACCOUNT_TOKEN):
-                    set_at: str | None = dt_util.utcnow().isoformat()
-                elif token:
-                    set_at = current.get(CONF_ACCOUNT_TOKEN_SET_AT) or dt_util.utcnow().isoformat()
-                else:
-                    set_at = None
-                # Clear stale sign-in warnings; the daily check re-raises if needed.
-                for suffix in ("web_sign_in", "web_sign_in_expiring"):
-                    ir.async_delete_issue(
-                        self.hass, DOMAIN, f"{suffix}_{self.config_entry.entry_id}"
-                    )
+                if token != saved:
+                    # Notices about the old sign-in no longer apply.
+                    async_clear_issues(self.hass, self.config_entry.entry_id)
                 return self.async_create_entry(
                     data={
                         CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL]),
                         CONF_PACKAGE_SENSORS: bool(user_input[CONF_PACKAGE_SENSORS]),
                         CONF_ACCOUNT_TOKEN: token or None,
-                        CONF_ACCOUNT_TOKEN_SET_AT: set_at,
+                        CONF_ACCOUNT_TOKEN_SET_AT: set_at if token else None,
                     }
                 )
-        schema = vol.Schema(
-            {
-                vol.Required(
-                    CONF_SCAN_INTERVAL,
-                    default=current.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_MINUTES),
-                ): NumberSelector(
-                    NumberSelectorConfig(
-                        min=MIN_SCAN_MINUTES,
-                        max=MAX_SCAN_MINUTES,
-                        step=1,
-                        mode=NumberSelectorMode.BOX,
-                        unit_of_measurement="min",
-                    )
-                ),
-                vol.Required(
-                    CONF_PACKAGE_SENSORS, default=current.get(CONF_PACKAGE_SENSORS, True)
-                ): BooleanSelector(),
-                vol.Optional(
-                    CONF_ACCOUNT_TOKEN,
-                    description={"suggested_value": current.get(CONF_ACCOUNT_TOKEN) or ""},
-                ): TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD)),
-            }
-        )
+        fields: dict[vol.Marker, Any] = {
+            vol.Required(
+                CONF_SCAN_INTERVAL,
+                default=current.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_MINUTES),
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=MIN_SCAN_MINUTES,
+                    max=MAX_SCAN_MINUTES,
+                    step=1,
+                    mode=NumberSelectorMode.BOX,
+                    unit_of_measurement="min",
+                )
+            ),
+            vol.Required(
+                CONF_PACKAGE_SENSORS, default=current.get(CONF_PACKAGE_SENSORS, True)
+            ): BooleanSelector(),
+            vol.Optional(CONF_ACCOUNT_TOKEN): TextSelector(
+                TextSelectorConfig(type=TextSelectorType.PASSWORD)
+            ),
+        }
+        if saved:
+            fields[vol.Optional(CONF_REMOVE_ACCOUNT_TOKEN, default=False)] = BooleanSelector()
+        schema = vol.Schema(fields)
+        if user_input is not None:
+            # After an error, keep what was just typed (never the saved sign-in).
+            schema = self.add_suggested_values_to_schema(schema, user_input)
         return self.async_show_form(
             step_id="init",
             data_schema=schema,

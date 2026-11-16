@@ -37,7 +37,7 @@ gh workflow run release.yml -f release_type=beta -f summary="Try the new morning
 ## What the workflow does
 
 1. **Works out the version** from the existing tags. It stops if nothing has changed since the last release, so a double click can't publish the same thing twice.
-2. **Runs the checks**: the same ones CI runs on every push (lint, tests, Home Assistant's manifest check, the HACS check, and that the built panel matches its source).
+2. **Runs the checks**: the same ones CI runs on every push (lint, type checks, tests for the integration and the panel, Home Assistant's manifest check, the HACS check, and that the built panel and brand images match their sources).
 3. **Sets the version** in `custom_components/parcel/manifest.json`, commits that to `main` as "Release 0.02", and tags the commit.
 4. **Pushes** the commit and the tag together. If `main` has moved on since the run started, the push is refused and nothing is released.
 5. **Publishes the GitHub release** with the release notes and `parcel.zip` (the integration folder, for people who install by hand). A beta is marked as a pre-release; a minor or major becomes the latest release.

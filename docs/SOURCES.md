@@ -26,6 +26,7 @@ Read first-hand from the public JavaScript that web.parcelapp.net serves (`/js/3
 ## Home Assistant
 
 - Home Assistant's developer documentation, and the signatures of the platform functions an integration must call (config flows, coordinators, entities, panels, websocket commands, device triggers, repairs), read from an installed copy of Home Assistant.
+- Schemas are written with [Probatio](https://probatio.frenck.dev), which Home Assistant has used in place of voluptuous since 2026.9 ([announcement](https://contributors.home-assistant.io/blog/2026/09/30/probatio-validation-engine)).
 
 ## Logo and icon
 
@@ -47,3 +48,4 @@ Before the from-scratch requirement was set, the README, one documentation page 
 - [Outfit](https://fonts.google.com/specimen/Outfit) via `@fontsource/outfit` (SIL Open Font License 1.1).
 - [esbuild](https://esbuild.github.io) (MIT), build-time only.
 - [resvg](https://github.com/yisibl/resvg-js) via `@resvg/resvg-wasm` (MPL-2.0), build-time only: it draws the brand PNGs from the SVG files.
+- [ESLint](https://eslint.org) (MIT), [mypy](https://mypy-lang.org) (MIT) and [Ruff](https://docs.astral.sh/ruff/) (MIT), for checking the code only.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorEntityDescription
@@ -13,9 +13,10 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import CONF_PACKAGE_SENSORS
-from .coordinator import ParcelConfigEntry, ParcelCoordinator, Summary
+from .coordinator import ParcelConfigEntry, ParcelCoordinator
 from .entity import ParcelEntity
 from .models import STATUS_OPTIONS, Delivery, join_names
+from .summary import Summary
 
 PACKAGE_PREFIX = "package_"
 
@@ -98,8 +99,11 @@ async def async_setup_entry(
     """Add the summary sensors, and keep per-package sensors in step with Parcel."""
     coordinator = entry.runtime_data
     async_add_entities(
-        [ParcelSummarySensor(coordinator, description) for description in SUMMARY_SENSORS]
-        + [ParcelNextDeliverySensor(coordinator)]
+        [
+            *(ParcelSummarySensor(coordinator, description) for description in SUMMARY_SENSORS),
+            ParcelNextDeliverySensor(coordinator),
+            ParcelNextDeliveryDaySensor(coordinator),
+        ]
     )
 
     registry = er.async_get(hass)
@@ -139,6 +143,8 @@ class ParcelSummarySensor(ParcelEntity, SensorEntity):
 
     entity_description: ParcelSummaryDescription
     _attr_native_unit_of_measurement = "packages"
+    # The full list changes with every tracking update; history only needs the count.
+    _unrecorded_attributes = frozenset({"packages"})
 
     def __init__(
         self, coordinator: ParcelCoordinator, description: ParcelSummaryDescription
@@ -176,7 +182,7 @@ class ParcelSummarySensor(ParcelEntity, SensorEntity):
 
 
 class ParcelNextDeliverySensor(ParcelEntity, SensorEntity):
-    """When the next package is expected."""
+    """When the next delivery window starts, for packages whose carrier gave a time."""
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
     _attr_translation_key = "next_delivery"
@@ -187,22 +193,50 @@ class ParcelNextDeliverySensor(ParcelEntity, SensorEntity):
 
     @property
     def native_value(self) -> datetime | None:
-        """Start of the expected window, or the start of the expected day."""
-        return self.coordinator.summary().next_delivery_at
+        """Start of the next known delivery window.
+
+        Unknown when carriers have only given days; the next delivery day sensor
+        covers those, so a day never shows up here as "midnight".
+        """
+        return self.coordinator.summary().next_timed_at
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Which package, and whether only the day is known."""
-        summary = self.coordinator.summary()
-        delivery = summary.next_delivery
+        """Which package, and when its window ends."""
+        delivery = self.coordinator.summary().next_timed
         if delivery is None:
             return {"package": None}
         return {
             "package": delivery.description,
             "carrier": self.coordinator.carriers.name(delivery.carrier_code),
             "tracking_number": delivery.tracking_number,
-            "date_only": delivery.eta_date is not None,
             "window_end": delivery.eta_end.isoformat() if delivery.eta_end else None,
+        }
+
+
+class ParcelNextDeliveryDaySensor(ParcelEntity, SensorEntity):
+    """The next day a package is expected, whether or not a time is known."""
+
+    _attr_device_class = SensorDeviceClass.DATE
+    _attr_translation_key = "next_delivery_day"
+
+    def __init__(self, coordinator: ParcelCoordinator) -> None:
+        """Set up."""
+        super().__init__(coordinator, "next_delivery_day")
+
+    @property
+    def native_value(self) -> date | None:
+        """The day."""
+        return self.coordinator.summary().next_day
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """What is expected that day."""
+        items = self.coordinator.summary().next_day_deliveries
+        return {
+            "package": items[0].description if items else None,
+            "names": join_names([item.description for item in items]),
+            "count": len(items),
         }
 
 
@@ -218,12 +252,24 @@ class ParcelPackageSensor(ParcelEntity, SensorEntity):
         super().__init__(coordinator, f"{PACKAGE_PREFIX}{key}")
         self._key = key
         delivery = coordinator.data.deliveries.get(key) if coordinator.data else None
-        self._attr_name = delivery.description if delivery else key
+        self._name = delivery.description if delivery else key
 
     @property
     def _delivery(self) -> Delivery | None:
         data = self.coordinator.data
         return data.deliveries.get(self._key) if data else None
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Follow the package's name when it's changed in Parcel."""
+        if (delivery := self._delivery) is not None:
+            self._name = delivery.description
+        super()._handle_coordinator_update()
+
+    @property
+    def name(self) -> str:
+        """The package's name in Parcel."""
+        return self._name
 
     @property
     def available(self) -> bool:

@@ -13,6 +13,7 @@ from .const import CONF_ACCOUNT_TOKEN
 from .coordinator import ParcelConfigEntry
 
 # account_token_set_at is a timestamp, not a secret, so it's left in for debugging.
+# "event" is the carrier's own wording, which often names people and places.
 TO_REDACT = {
     CONF_API_KEY,
     CONF_ACCOUNT_TOKEN,
@@ -20,6 +21,7 @@ TO_REDACT = {
     "tracking_number",
     "description",
     "extra_information",
+    "event",
     "location",
     "additional",
 }
@@ -39,7 +41,7 @@ async def async_get_config_entry_diagnostics(
         },
         "status": {
             "last_update_success": coordinator.last_update_success,
-            "last_error": str(coordinator.last_exception) if coordinator.last_exception else None,
+            "last_error": coordinator.last_error,
             "update_interval_seconds": coordinator.update_interval.total_seconds()
             if coordinator.update_interval
             else None,

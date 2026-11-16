@@ -111,7 +111,7 @@ def next_version(tags: list[str], release_type: str) -> Version:
     target = latest.next_major() if release_type.startswith("major") else latest.next_minor()
     if not release_type.endswith("beta"):
         return target
-    earlier = [v.beta for v in released(tags) if v.is_beta and v.target == target]
+    earlier = [v.beta for v in released(tags) if v.beta is not None and v.target == target]
     return replace(target, beta=max(earlier, default=0) + 1)
 
 

@@ -22,6 +22,9 @@
       "next_delivery": {
         "default": "mdi:calendar-clock"
       },
+      "next_delivery_day": {
+        "default": "mdi:calendar-arrow-right"
+      },
       "package": {
         "default": "mdi:package-variant-closed"
       }

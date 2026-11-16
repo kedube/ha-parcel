@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import logging
 import re
 from typing import Any
@@ -16,8 +16,7 @@ from homeassistant.exceptions import (
     HomeAssistantError,
     ServiceValidationError,
 )
-from homeassistant.helpers import issue_registry as ir
-from homeassistant.helpers.event import async_call_later, async_track_time_interval
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -31,68 +30,48 @@ from .api import (
     ParcelWebClient,
 )
 from .carriers import EXTRA_EMAIL, CarrierRegistry
+from .changes import REASON_DELETED, Change, detect_changes, event_message, removal
 from .const import (
     ADDS_PER_DAY,
-    CONF_ACCOUNT_TOKEN_SET_AT,
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_MINUTES,
     DELIVERED_SENSOR_RETENTION,
     DOMAIN,
-    EVENT_ADDED,
-    EVENT_DELIVERED,
-    EVENT_IN_TRANSIT,
-    EVENT_LABEL_CREATED,
     EVENT_NEEDS_ATTENTION,
-    EVENT_OUT_FOR_DELIVERY,
     EVENT_PACKAGE_UPDATE,
-    EVENT_READY_FOR_PICKUP,
-    EVENT_REMOVED,
-    EVENT_UPDATE,
     FOLLOW_UP_REFRESH_SECONDS,
     MANUAL_REFRESH_MIN_GAP,
     MANUAL_REFRESH_RESERVE,
+    OUTAGE_GRACE,
+    OUTAGE_GRACE_CHECKS,
     RATE_LIMIT_BACKOFF,
     READS_PER_HOUR,
-    WEB_SIGN_IN_CHECK_INTERVAL,
-    WEB_SIGN_IN_DOCS_URL,
-    WEB_SIGN_IN_FIRST_CHECK,
-    WEB_TOKEN_LIFETIME,
-    WEB_TOKEN_WARN_AHEAD,
 )
+from .matching import find_stored, match_pending, same_package
 from .models import (
-    DELIVERED,
-    EXCEPTION,
-    FAILED_ATTEMPT,
-    OUT_FOR_DELIVERY,
-    READY_FOR_PICKUP,
-    STALLED,
+    NOT_FOUND,
     STATUS_SLUGS,
     Delivery,
-    TrackingEvent,
     detect_carriers,
     guess_icon,
     normalize_number,
 )
-from .storage import ParcelStorage
+from .storage import ParcelStorage, PendingRecord
+from .summary import Summary, build_summary
+from .web_sign_in import WebSignInMonitor
 
 _LOGGER = logging.getLogger(__name__)
 
 type ParcelConfigEntry = ConfigEntry[ParcelCoordinator]
 
-STATUS_EVENTS: dict[int, str] = {
-    0: EVENT_DELIVERED,
-    1: EVENT_NEEDS_ATTENTION,
-    2: EVENT_IN_TRANSIT,
-    3: EVENT_READY_FOR_PICKUP,
-    4: EVENT_OUT_FOR_DELIVERY,
-    5: EVENT_UPDATE,
-    6: EVENT_NEEDS_ATTENTION,
-    7: EVENT_NEEDS_ATTENTION,
-    8: EVENT_LABEL_CREATED,
-}
 ICON_FORMAT = re.compile(r"^mdi:[a-z0-9-]+$")
 
 type EventListener = Callable[[str, dict[str, Any]], None]
+
+
+def _text(value: str | None) -> str | None:
+    """A trimmed string, or None when there's nothing in it."""
+    return (value or "").strip() or None
 
 
 @dataclass(slots=True)
@@ -106,7 +85,7 @@ class PendingAdd:
     added_at: datetime
 
     @classmethod
-    def from_store(cls, key: str, item: dict[str, Any]) -> PendingAdd | None:
+    def from_store(cls, key: str, item: PendingRecord) -> PendingAdd | None:
         """Rebuild from storage."""
         added_at = dt_util.parse_datetime(item.get("added_at") or "")
         if not added_at:
@@ -119,7 +98,7 @@ class PendingAdd:
             added_at=added_at,
         )
 
-    def to_store(self) -> dict[str, Any]:
+    def to_store(self) -> PendingRecord:
         """Serialize for storage."""
         return {
             "tracking_number": self.tracking_number,
@@ -138,52 +117,6 @@ class ParcelSnapshot:
     fetched_at: datetime | None = None
 
 
-@dataclass(slots=True)
-class Summary:
-    """The high-level picture used by the summary sensors."""
-
-    out_for_delivery: list[Delivery]
-    arriving_today: list[Delivery]
-    needs_attention: list[Delivery]
-    ready_for_pickup: list[Delivery]
-    on_the_way: list[Delivery]
-    delivered_today: list[Delivery]
-    next_delivery: Delivery | None
-    next_delivery_at: datetime | None
-
-
-def event_message(etype: str, delivery: Delivery, carrier: str) -> str:
-    """A sentence ready to use in a notification."""
-    name = delivery.description
-    latest = delivery.latest_event
-    if etype == EVENT_ADDED:
-        return f"Now tracking {name}"
-    if etype == EVENT_LABEL_CREATED:
-        return f"{name} has a shipping label. {carrier} doesn't have it yet"
-    if etype == EVENT_IN_TRANSIT:
-        return f"{name} is on the way"
-    if etype == EVENT_OUT_FOR_DELIVERY:
-        return f"{name} is out for delivery"
-    if etype == EVENT_READY_FOR_PICKUP:
-        where = f" at {latest.location}" if latest and latest.location else ""
-        return f"{name} is ready for pickup{where}"
-    if etype == EVENT_DELIVERED:
-        return f"{name} was delivered"
-    if etype == EVENT_NEEDS_ATTENTION:
-        if delivery.status_code == FAILED_ATTEMPT:
-            return f"{carrier} missed the delivery of {name}"
-        if delivery.status_code == EXCEPTION:
-            detail = f": {latest.text}" if latest else ""
-            return f"{name} has a delivery problem{detail}"
-        if delivery.status_code == STALLED:
-            return f"{name} hasn't had an update in a while"
-    if etype == EVENT_REMOVED:
-        return f"{name} is no longer tracked"
-    if latest:
-        return f"{name}: {latest.text}"
-    return f"{name} has an update"
-
-
 class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
     """Keeps one Parcel account's packages current."""
 
@@ -196,6 +129,7 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         client: ParcelClient,
         storage: ParcelStorage,
         carriers: CarrierRegistry,
+        web_client: ParcelWebClient | None = None,
     ) -> None:
         """Set the polling interval from the account's options."""
         minutes = int(entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_MINUTES))
@@ -209,14 +143,20 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         self.client = client
         self.storage = storage
         self.carriers = carriers
-        self.web_client: ParcelWebClient | None = None
+        self.web_sign_in = WebSignInMonitor(hass, entry, web_client)
         self.device_id: str | None = None
         self._event_listeners: list[EventListener] = []
         self._follow_up_unsub: CALLBACK_TYPE | None = None
-        self._web_check_unsub: CALLBACK_TYPE | None = None
-        self._web_first_check_unsub: CALLBACK_TYPE | None = None
-        self._issue_expired = f"web_sign_in_{entry.entry_id}"
-        self._issue_expiring = f"web_sign_in_expiring_{entry.entry_id}"
+        # Why the latest check failed, kept while the last known packages are still shown.
+        self._trouble: str | None = None
+        self._summary: tuple[date, Summary] | None = None
+        # Adds on their way to Parcel, so a double submit doesn't spend two.
+        self._adding: set[tuple[str, str]] = set()
+
+    @property
+    def web_client(self) -> ParcelWebClient | None:
+        """Parcel's web app for this account, when a web sign-in is configured."""
+        return self.web_sign_in.client
 
     # Events ------------------------------------------------------------------
 
@@ -233,23 +173,26 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         return remove
 
     @callback
-    def _emit(self, etype: str, data: dict[str, Any]) -> None:
+    def _emit(self, data: dict[str, Any]) -> None:
         self.hass.bus.async_fire(EVENT_PACKAGE_UPDATE, data)
         for listener in list(self._event_listeners):
-            listener(etype, data)
+            listener(data["type"], data)
 
     @callback
-    def _emit_all(self, events: list[tuple[str, dict[str, Any]]]) -> None:
-        for etype, data in events:
-            self._emit(etype, data)
+    def _emit_all(self, events: list[dict[str, Any]]) -> None:
+        for data in events:
+            self._emit(data)
 
-    def _event_data(self, etype: str, delivery: Delivery, previous: int | None) -> dict[str, Any]:
+    def _event_data(self, change: Change) -> dict[str, Any]:
+        """What the bus event, the event entity and device triggers carry for a change."""
+        delivery = change.delivery
         latest = delivery.latest_event
         carrier = self.carriers.name(delivery.carrier_code)
+        previous = change.previous_status
         data: dict[str, Any] = {
             "entry_id": self.config_entry.entry_id,
             "device_id": self.device_id,
-            "type": etype,
+            "type": change.kind,
             "key": delivery.key,
             "description": delivery.description,
             "tracking_number": delivery.tracking_number,
@@ -259,28 +202,19 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
             "previous_status": STATUS_SLUGS.get(previous) if previous is not None else None,
             "event": latest.text if latest else None,
             "location": latest.location if latest else None,
-            "message": event_message(etype, delivery, carrier),
+            "message": event_message(change.kind, delivery, carrier),
         }
-        if etype == EVENT_NEEDS_ATTENTION:
+        if change.reason:
+            data["reason"] = change.reason
+        elif change.kind == EVENT_NEEDS_ATTENTION:
             data["reason"] = delivery.status
         return data
 
-    def _removed_data(self, key: str, known: dict[str, Any], reason: str) -> dict[str, Any]:
-        stub = Delivery(
-            key=key,
-            tracking_number=known.get("tracking_number", ""),
-            carrier_code=known.get("carrier_code", ""),
-            description=known.get("description") or known.get("tracking_number", ""),
-            status_code=int(known.get("status", 5)),
-            events=(),
-            extra_information=None,
-            eta_start=None,
-            eta_end=None,
-            eta_date=None,
-        )
-        data = self._event_data(EVENT_REMOVED, stub, stub.status_code)
-        data["reason"] = reason
-        return data
+    @callback
+    def async_update_listeners(self) -> None:
+        """Tell entities and the panel about a change; the summary is worked out afresh."""
+        self._summary = None
+        super().async_update_listeners()
 
     # Polling -----------------------------------------------------------------
 
@@ -302,10 +236,18 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
             ) from err
         except ParcelRateLimitError as err:
             wait = self._pause_requests(err.retry_after)
+            self._trouble = None  # Parcel answered; the pause is reported on its own
             # Write now, not after the usual delay, so a restart or setup retry sees it.
             await self.storage.async_save_now()
             return self._keep_last_data("rate_limited", wait.total_seconds(), err)
         except ParcelError as err:
+            if self._trouble is None:
+                _LOGGER.warning("Couldn't get updates from Parcel: %s", err)
+            self._trouble = str(err)
+            if self._within_outage_grace(now):
+                # A short outage: keep showing what was last known instead of turning
+                # every sensor unavailable. The panel says the last check failed.
+                return self.data
             raise UpdateFailed(
                 translation_domain=DOMAIN,
                 translation_key="update_failed",
@@ -313,11 +255,22 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
             ) from err
         finally:
             self.storage.async_schedule_save()
+        if self._trouble is not None:
+            _LOGGER.info("Getting updates from Parcel again")
+            self._trouble = None
         self.storage.set_rate_limited_until(None)
-        self.storage.data["cache"] = {"fetched_at": now.isoformat(), "deliveries": raw}
+        self.storage.remember_response(raw, now)
         snapshot = self._process(raw, now)
         self.storage.async_schedule_save()
         return snapshot
+
+    def _within_outage_grace(self, now: datetime) -> bool:
+        """Whether the last successful check is recent enough to keep showing."""
+        data = self.data
+        if data is None or data.fetched_at is None or self.update_interval is None:
+            return False
+        grace = max(OUTAGE_GRACE, self.update_interval * OUTAGE_GRACE_CHECKS)
+        return now - data.fetched_at < grace
 
     def _pause_requests(self, retry_after: float | None) -> timedelta:
         """Parcel said "too many requests": make none for a while."""
@@ -343,6 +296,7 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         raise UpdateFailed(
             translation_domain=DOMAIN,
             translation_key=reason,
+            translation_placeholders={"minutes": str(max(1, round(retry_seconds / 60)))},
             retry_after=max(1.0, retry_seconds),
         ) from cause
 
@@ -354,6 +308,15 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
             or self.storage.reads_in_last_hour(now) >= READS_PER_HOUR
         )
 
+    @property
+    def last_error(self) -> str | None:
+        """Why the latest check failed, if it did (also while old data is still shown)."""
+        if self._trouble:
+            return self._trouble
+        if not self.last_update_success and self.last_exception is not None:
+            return str(self.last_exception) or "Couldn't check Parcel"
+        return None
+
     async def async_restore_from_cache(self, *, allow_stale: bool = False) -> bool:
         """Reuse the last saved response instead of spending a check.
 
@@ -361,11 +324,10 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         response is used, so a rate limit at startup doesn't take the integration
         down; the "updated" time shows how old it is.
         """
-        cache = self.storage.data.get("cache") or {}
-        fetched_at = dt_util.parse_datetime(cache.get("fetched_at") or "")
-        raw = cache.get("deliveries")
-        if not fetched_at or not isinstance(raw, list) or self.update_interval is None:
+        cached = self.storage.cached_response()
+        if cached is None or self.update_interval is None:
             return False
+        fetched_at, raw = cached
         if not allow_stale and dt_util.utcnow() - fetched_at >= self.update_interval:
             return False
         self.async_set_updated_data(self._process(raw, fetched_at))
@@ -374,28 +336,36 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
     def _process(self, raw: list[dict[str, Any]], fetched_at: datetime) -> ParcelSnapshot:
         tz = dt_util.get_default_time_zone()
         self.storage.prune(fetched_at)
-        deleted = self.storage.data["deleted"]
+        deleted = self.storage.deleted
         deliveries: dict[str, Delivery] = {}
-        for item in raw:
+        listed: set[str] = set()
+        for listing in raw:
             try:
-                delivery = Delivery.from_api(item, tz)
+                delivery = Delivery.from_api(listing, tz)
             except (KeyError, TypeError, ValueError) as err:
                 _LOGGER.debug("Skipping a delivery in an unexpected format: %s", err)
                 continue
+            listed.add(delivery.key)
             if delivery.key not in deleted:
                 deliveries[delivery.key] = delivery
+        # A delete marker is only needed while Parcel's cached list still shows the
+        # package. Once it's gone the marker goes too, so the same package shows up
+        # again if it's added again later.
+        for key in [key for key in deleted if key not in listed]:
+            del deleted[key]
 
         # Packages added from Home Assistant wait in "pending" until Parcel lists them.
         # Parcel may store a different number (it generates one for placeholders), so a
         # newly listed package with the same carrier and name also counts as a match.
-        known = self.storage.data["known"]
+        known = self.storage.known
         unclaimed = [key for key in deliveries if key not in known]
-        icons = self.storage.data["icons"]
+        icons = self.storage.icons
+        stored_pending = self.storage.pending
         pending: dict[str, PendingAdd] = {}
-        for key, item in list(self.storage.data["pending"].items()):
-            match = key if key in deliveries else _match_pending(item, deliveries, unclaimed)
+        for key, item in list(stored_pending.items()):
+            match = key if key in deliveries else match_pending(item, deliveries, unclaimed)
             if match is not None:
-                del self.storage.data["pending"][key]
+                del stored_pending[key]
                 if match in unclaimed:
                     unclaimed.remove(match)
                 if match != key and key in icons:
@@ -403,53 +373,17 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
                 continue
             if restored := PendingAdd.from_store(key, item):
                 pending[key] = restored
+        # Icon choices go when their package does.
+        for key in [key for key in icons if key not in deliveries and key not in stored_pending]:
+            del icons[key]
 
-        events = self._track_changes(deliveries, fetched_at)
-        if events:
+        changes = detect_changes(known, deliveries, fetched_at, announce=self.storage.initialized)
+        self.storage.mark_initialized()
+        if changes:
             # Fire after the new data is in place, so automations see current counts.
+            events = [self._event_data(change) for change in changes]
             self.hass.loop.call_soon(self._emit_all, events)
         return ParcelSnapshot(deliveries=deliveries, pending=pending, fetched_at=fetched_at)
-
-    def _track_changes(
-        self, deliveries: dict[str, Delivery], now: datetime
-    ) -> list[tuple[str, dict[str, Any]]]:
-        known: dict[str, dict[str, Any]] = self.storage.data["known"]
-        announce = bool(self.storage.data.get("initialized"))
-        events: list[tuple[str, dict[str, Any]]] = []
-        for key, delivery in deliveries.items():
-            latest = delivery.latest_event
-            signature = latest.signature if latest else ""
-            previous = known.get(key)
-            if previous is None:
-                known[key] = {
-                    "status": delivery.status_code,
-                    "first_seen": now.isoformat(),
-                    "delivered_at": _delivered_time(delivery, latest, None),
-                    "event": signature,
-                    "description": delivery.description,
-                    "tracking_number": delivery.tracking_number,
-                    "carrier_code": delivery.carrier_code,
-                }
-                if announce:
-                    events.append((EVENT_ADDED, self._event_data(EVENT_ADDED, delivery, None)))
-                continue
-            old_status = previous.get("status")
-            previous["description"] = delivery.description
-            if old_status != delivery.status_code:
-                if delivery.status_code == DELIVERED and not previous.get("delivered_at"):
-                    previous["delivered_at"] = _delivered_time(delivery, latest, now)
-                etype = STATUS_EVENTS.get(delivery.status_code, EVENT_UPDATE)
-                events.append((etype, self._event_data(etype, delivery, old_status)))
-            elif signature and signature != previous.get("event"):
-                events.append((EVENT_UPDATE, self._event_data(EVENT_UPDATE, delivery, old_status)))
-            previous["status"] = delivery.status_code
-            previous["event"] = signature
-        for key in [key for key in known if key not in deliveries]:
-            gone = known.pop(key)
-            if announce:
-                events.append((EVENT_REMOVED, self._removed_data(key, gone, "no_longer_listed")))
-        self.storage.data["initialized"] = True
-        return events
 
     # Reading -----------------------------------------------------------------
 
@@ -457,7 +391,8 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         """When a delivered package arrived, if known."""
         if delivery.is_active:
             return None
-        stamp = self.storage.data["known"].get(delivery.key, {}).get("delivered_at")
+        record = self.storage.known.get(delivery.key)
+        stamp = record.get("delivered_at") if record else None
         if stamp and (parsed := dt_util.parse_datetime(stamp)):
             return parsed
         latest = delivery.latest_event
@@ -465,48 +400,16 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
 
     def icon_for(self, key: str, description: str) -> str:
         """The icon a person chose, or one guessed from the name."""
-        return self.storage.data["icons"].get(key) or guess_icon(description)
+        return self.storage.icons.get(key) or guess_icon(description)
 
     def summary(self) -> Summary:
-        """Counts and lists for the summary sensors."""
-        tz = dt_util.get_default_time_zone()
-        today = dt_util.now(tz).date()
-        far = datetime.max.replace(tzinfo=tz)
-        items = sorted(
-            (self.data.deliveries if self.data else {}).values(),
-            key=lambda d: d.expected_sort_time(tz) or far,
-        )
-        active = [d for d in items if d.is_active]
-        delivered_today = [
-            d
-            for d in items
-            if not d.is_active
-            and (when := self.delivered_at(d)) is not None
-            and when.astimezone(tz).date() == today
-        ]
-        upcoming = [
-            (when, d)
-            for d in active
-            if not d.needs_attention
-            and (when := d.expected_sort_time(tz)) is not None
-            and when.astimezone(tz).date() >= today
-        ]
-        nxt = min(upcoming, key=lambda pair: pair[0]) if upcoming else None
-        return Summary(
-            out_for_delivery=[d for d in active if d.status_code == OUT_FOR_DELIVERY],
-            arriving_today=[
-                d
-                for d in active
-                if not d.needs_attention
-                and (d.status_code == OUT_FOR_DELIVERY or d.expected_day(tz) == today)
-            ],
-            needs_attention=[d for d in active if d.needs_attention],
-            ready_for_pickup=[d for d in active if d.status_code == READY_FOR_PICKUP],
-            on_the_way=[d for d in active if d.status_code != READY_FOR_PICKUP],
-            delivered_today=delivered_today,
-            next_delivery=nxt[1] if nxt else None,
-            next_delivery_at=nxt[0] if nxt else None,
-        )
+        """Counts and lists for the summary sensors, worked out once per change and day."""
+        now = dt_util.now()
+        today = now.date()
+        if self._summary is None or self._summary[0] != today:
+            deliveries = self.data.deliveries.values() if self.data else ()
+            self._summary = (today, build_summary(deliveries, self.delivered_at, now))
+        return self._summary[1]
 
     def wants_package_sensor(self, delivery: Delivery) -> bool:
         """Per-package sensors go away two days after delivery."""
@@ -515,16 +418,35 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         when = self.delivered_at(delivery)
         return when is None or dt_util.utcnow() - when < DELIVERED_SENSOR_RETENTION
 
+    def find_keys(self, tracking_number: str, carrier_code: str | None = None) -> list[str]:
+        """Keys of tracked packages (listed, or just added) with this tracking number.
+
+        Spaces, dashes and letter case in the number don't matter.
+        """
+        snapshot = self.data or ParcelSnapshot()
+        wanted = normalize_number(tracking_number)
+        tracked: list[tuple[str, Delivery | PendingAdd]] = [
+            *snapshot.deliveries.items(),
+            *snapshot.pending.items(),
+        ]
+        return [
+            key
+            for key, item in tracked
+            if normalize_number(item.tracking_number) == wanted
+            and (carrier_code is None or item.carrier_code == carrier_code)
+        ]
+
     def panel_state(self) -> dict[str, Any]:
         """What the sidebar panel needs for this account."""
         now = dt_util.utcnow()
         snapshot = self.data or ParcelSnapshot()
-        known = self.storage.data["known"]
-        icons = self.storage.data["icons"]
+        known = self.storage.known
+        icons = self.storage.icons
         deliveries = []
         for delivery in snapshot.deliveries.values():
             item = delivery.as_dict()
             when = self.delivered_at(delivery)
+            record = known.get(delivery.key)
             item.update(
                 {
                     "carrier_name": self.carriers.name(delivery.carrier_code),
@@ -532,7 +454,7 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
                     "icon": self.icon_for(delivery.key, delivery.description),
                     "icon_source": "user" if delivery.key in icons else "name",
                     "delivered_at": when.isoformat() if when else None,
-                    "first_seen": known.get(delivery.key, {}).get("first_seen"),
+                    "first_seen": record.get("first_seen") if record else None,
                 }
             )
             deliveries.append(item)
@@ -550,9 +472,6 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
             }
             for item in snapshot.pending.values()
         ]
-        error = None
-        if not self.last_update_success and self.last_exception is not None:
-            error = str(self.last_exception) or "Couldn't check Parcel"
         paused_until = self.storage.rate_limited_until(now)
         return {
             "entry_id": self.config_entry.entry_id,
@@ -566,7 +485,7 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
             else None,
             "updated_at": snapshot.fetched_at.isoformat() if snapshot.fetched_at else None,
             "paused_until": paused_until.isoformat() if paused_until else None,
-            "last_error": error,
+            "last_error": self.last_error,
             "deliveries": deliveries,
             "pending": pending,
         }
@@ -597,11 +516,12 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
                 translation_placeholders={"minutes": str(self.storage.minutes_until_read(now))},
             )
         await self.async_refresh()
-        if not self.last_update_success:
+        if error := self.last_error:
+            # Also when the check failed but the last known packages are still shown.
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
                 translation_key="update_failed",
-                translation_placeholders={"error": str(self.last_exception or "")},
+                translation_placeholders={"error": error},
             )
 
     async def async_add_package(
@@ -611,10 +531,16 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         description: str,
         carrier_code: str | None = None,
         extra: str | None = None,
+        postcode: str | None = None,
+        email: str | None = None,
         send_push_confirmation: bool = False,
         icon: str | None = None,
     ) -> dict[str, Any]:
-        """Add a package to Parcel. Parcel allows 20 adds a day, failures included."""
+        """Add a package to Parcel. Parcel allows 20 adds a day, failures included.
+
+        Some carriers need one more detail. Pass it as postcode or email, or as extra
+        to have it sent as whichever the carrier asks for.
+        """
         number = re.sub(r"\s+", "", tracking_number or "")
         name = (description or "").strip()
         if not number:
@@ -642,17 +568,22 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
                 translation_key="unknown_carrier",
                 translation_placeholders={"carrier": carrier},
             )
-        key = f"{carrier}:{number}"
-        snapshot = self.data or ParcelSnapshot()
-        if key in snapshot.deliveries or key in snapshot.pending:
+        claim = (carrier, normalize_number(number))
+        if self.find_keys(number, carrier) or claim in self._adding:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
                 translation_key="already_tracking",
                 translation_placeholders={"number": number},
             )
+        # The carrier decides whether "extra" is an email or a postcode.
         extra_kind = self.carriers.extra(carrier)
-        extra_value = (extra or "").strip() or None
-        if extra_kind and not extra_value:
+        send_postcode = _text(postcode)
+        send_email = _text(email)
+        if extra_kind == EXTRA_EMAIL:
+            send_email = send_email or _text(extra)
+        elif extra_kind:
+            send_postcode = send_postcode or _text(extra)
+        if extra_kind and not (send_email if extra_kind == EXTRA_EMAIL else send_postcode):
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
                 translation_key="extra_required",
@@ -664,6 +595,7 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         language = (self.hass.config.language or "en").split("-")[0].lower() or "en"
         self.storage.record_add(now)
         self.storage.async_schedule_save()
+        self._adding.add(claim)
         try:
             await self.client.async_add_delivery(
                 tracking_number=number,
@@ -671,8 +603,8 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
                 description=name,
                 language=language,
                 send_push_confirmation=send_push_confirmation,
-                postcode=extra_value if extra_kind and extra_kind != EXTRA_EMAIL else None,
-                email=extra_value if extra_kind == EXTRA_EMAIL else None,
+                postcode=send_postcode,
+                email=send_email,
             )
         except ParcelAuthError as err:
             self.config_entry.async_start_reauth(self.hass)
@@ -695,91 +627,24 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
                 translation_key="add_failed",
                 translation_placeholders={"error": str(err)},
             ) from err
+        finally:
+            self._adding.discard(claim)
 
+        key = f"{carrier}:{number}"
         added = PendingAdd(key, number, carrier, name, now)
-        self.storage.data["pending"][key] = added.to_store()
+        self.storage.pending[key] = added.to_store()
+        # If this package was deleted here earlier, it's wanted again.
+        deleted = self.storage.deleted
+        for old in [old for old in deleted if same_package(old, carrier, number)]:
+            del deleted[old]
         if icon:
-            self.storage.data["icons"][key] = icon
+            self.storage.icons[key] = icon
         self.storage.async_schedule_save()
         if self.data is not None:
             self.data.pending[key] = added
         self.async_update_listeners()
         self._schedule_follow_up()
         return {"key": key, "carrier": carrier, "carrier_name": self.carriers.name(carrier)}
-
-    # Web sign-in health -----------------------------------------------------
-
-    @callback
-    def async_start_web_sign_in_checks(self) -> None:
-        """Begin checking the web sign-in daily, and once shortly after startup."""
-        if self.web_client is None:
-            return
-        self._web_check_unsub = async_track_time_interval(
-            self.hass, self._async_check_web_sign_in, WEB_SIGN_IN_CHECK_INTERVAL
-        )
-        self._web_first_check_unsub = async_call_later(
-            self.hass, WEB_SIGN_IN_FIRST_CHECK, self._async_first_web_sign_in_check
-        )
-
-    async def _async_first_web_sign_in_check(self, _now: datetime) -> None:
-        """The one-off check shortly after startup."""
-        self._web_first_check_unsub = None
-        await self._async_check_web_sign_in()
-
-    def _web_sign_in_remaining(self) -> timedelta | None:
-        """How long until the pasted token reaches its 360-day lifetime, if known."""
-        stamp = self.config_entry.options.get(CONF_ACCOUNT_TOKEN_SET_AT)
-        set_at = dt_util.parse_datetime(stamp) if stamp else None
-        if set_at is None:
-            return None
-        return (set_at + WEB_TOKEN_LIFETIME) - dt_util.utcnow()
-
-    def _raise_web_sign_in_expired(self) -> None:
-        """Ask for a new token, and drop the softer 'expiring soon' notice."""
-        ir.async_create_issue(
-            self.hass,
-            DOMAIN,
-            self._issue_expired,
-            is_fixable=False,
-            severity=ir.IssueSeverity.WARNING,
-            translation_key="web_sign_in_expired",
-            translation_placeholders={"title": self.config_entry.title},
-            learn_more_url=WEB_SIGN_IN_DOCS_URL,
-        )
-        ir.async_delete_issue(self.hass, DOMAIN, self._issue_expiring)
-
-    async def _async_check_web_sign_in(self, _now: datetime | None = None) -> None:
-        """Daily: confirm the token still works and warn before it expires."""
-        if self.web_client is None:
-            return
-        try:
-            await self.web_client.async_validate()
-        except ParcelWebAuthError:
-            self._raise_web_sign_in_expired()
-            return
-        except ParcelError as err:
-            _LOGGER.debug("Couldn't check the Parcel web sign-in; will retry: %s", err)
-            return
-        # The token works. Clear any expiry warning, and raise a gentle heads-up
-        # when it's within two weeks of Parcel's 360-day limit.
-        ir.async_delete_issue(self.hass, DOMAIN, self._issue_expired)
-        remaining = self._web_sign_in_remaining()
-        if remaining is not None and remaining <= WEB_TOKEN_WARN_AHEAD:
-            ir.async_create_issue(
-                self.hass,
-                DOMAIN,
-                self._issue_expiring,
-                is_fixable=False,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key="web_sign_in_expiring",
-                translation_placeholders={
-                    "title": self.config_entry.title,
-                    "days": str(max(0, remaining.days)),
-                },
-                learn_more_url=WEB_SIGN_IN_DOCS_URL,
-            )
-        else:
-            ir.async_delete_issue(self.hass, DOMAIN, self._issue_expiring)
 
     def _schedule_follow_up(self) -> None:
         """Check again a little after an add, so the new package shows up sooner."""
@@ -798,36 +663,44 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
 
     async def async_delete_package(self, key: str) -> None:
         """Delete a package from Parcel (all devices) using the web sign-in."""
-        if self.web_client is None:
+        web = self.web_client
+        if web is None:
             raise ServiceValidationError(
                 translation_domain=DOMAIN, translation_key="delete_needs_sign_in"
             )
         snapshot = self.data or ParcelSnapshot()
         delivery = snapshot.deliveries.get(key)
-        pending = snapshot.pending.get(key)
-        if delivery is None and pending is None:
+        target = delivery or snapshot.pending.get(key)
+        if target is None:
             raise ServiceValidationError(
                 translation_domain=DOMAIN, translation_key="package_not_found"
             )
-        number = delivery.tracking_number if delivery else pending.tracking_number  # type: ignore[union-attr]
-        carrier = delivery.carrier_code if delivery else pending.carrier_code  # type: ignore[union-attr]
-        name = delivery.description if delivery else pending.description  # type: ignore[union-attr]
+        number = target.tracking_number
+        carrier = target.carrier_code
+        name = target.description
         try:
             # Delete exactly what Parcel stored, then confirm it's gone: Parcel reports
             # success even when nothing matched (like the web app, re-read the list).
-            stored = _find_stored(
-                await self.web_client.async_list_deliveries(), number, carrier, name
+            # A package Parcel already lists is found by its number alone; if that's no
+            # longer in the web list, it has been deleted already and nothing is sent.
+            # Only an add Parcel hasn't listed yet may be found by its name instead.
+            stored = find_stored(
+                await web.async_list_deliveries(),
+                number,
+                carrier,
+                unlisted_name=name if delivery is None else None,
+                listed_numbers={
+                    normalize_number(item.tracking_number) for item in snapshot.deliveries.values()
+                },
             )
             if stored is not None:
-                await self.web_client.async_delete_delivery(stored[0], stored[1])
-                if _find_stored(
-                    await self.web_client.async_list_deliveries(), stored[0], stored[1], None
-                ):
+                await web.async_delete_delivery(stored[0], stored[1])
+                if find_stored(await web.async_list_deliveries(), stored[0], stored[1]):
                     raise HomeAssistantError(
                         translation_domain=DOMAIN, translation_key="delete_not_confirmed"
                     )
         except ParcelWebAuthError as err:
-            self._raise_web_sign_in_expired()
+            self.web_sign_in.async_mark_expired()
             raise HomeAssistantError(
                 translation_domain=DOMAIN, translation_key="web_sign_in_expired"
             ) from err
@@ -837,98 +710,44 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
                 translation_key="delete_failed",
                 translation_placeholders={"error": str(err)},
             ) from err
-        # The sign-in just worked, so clear any warnings about it.
-        ir.async_delete_issue(self.hass, DOMAIN, self._issue_expired)
+        self.web_sign_in.async_mark_working()
 
-        now = dt_util.utcnow()
-        store = self.storage.data
-        store["deleted"][key] = now.isoformat()
-        store["pending"].pop(key, None)
-        store["icons"].pop(key, None)
-        known = store["known"].pop(key, None) or {
+        self.storage.mark_deleted(key, dt_util.utcnow())
+        self.storage.pending.pop(key, None)
+        self.storage.icons.pop(key, None)
+        remembered = self.storage.known.pop(key, None)
+        record: Mapping[str, Any] = remembered or {
             "tracking_number": number,
             "carrier_code": carrier,
-            "description": delivery.description if delivery else pending.description,  # type: ignore[union-attr]
-            "status": delivery.status_code if delivery else 5,
+            "description": name,
+            "status": delivery.status_code if delivery else NOT_FOUND,
         }
         snapshot.deliveries.pop(key, None)
         snapshot.pending.pop(key, None)
         self.storage.async_schedule_save()
         self.async_update_listeners()
-        self._emit(EVENT_REMOVED, self._removed_data(key, known, "deleted"))
+        self._emit(self._event_data(removal(key, record, REASON_DELETED)))
 
     @callback
     def async_set_icon(self, key: str, icon: str | None) -> None:
         """Remember a person's icon choice (None goes back to guessing)."""
-        icons = self.storage.data["icons"]
+        snapshot = self.data or ParcelSnapshot()
+        if key not in snapshot.deliveries and key not in snapshot.pending:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN, translation_key="package_not_found"
+            )
         if icon and ICON_FORMAT.match(icon):
-            icons[key] = icon
+            self.storage.icons[key] = icon
         else:
-            icons.pop(key, None)
+            self.storage.icons.pop(key, None)
         self.storage.async_schedule_save()
         self.async_update_listeners()
 
     async def async_shutdown(self) -> None:
         """Stop timers and save before unloading."""
         await super().async_shutdown()
-        for unsub in ("_follow_up_unsub", "_web_check_unsub", "_web_first_check_unsub"):
-            if cancel := getattr(self, unsub):
-                cancel()
-                setattr(self, unsub, None)
+        if self._follow_up_unsub:
+            self._follow_up_unsub()
+            self._follow_up_unsub = None
+        self.web_sign_in.async_stop()
         await self.storage.async_save_now()
-
-
-def _match_pending(
-    item: dict[str, Any], deliveries: dict[str, Delivery], candidates: list[str]
-) -> str | None:
-    """A newly listed package that is the pending add (same carrier, same number or name)."""
-    number = normalize_number(item.get("tracking_number", ""))
-    for key in candidates:
-        delivery = deliveries[key]
-        if delivery.carrier_code != item.get("carrier_code"):
-            continue
-        if normalize_number(delivery.tracking_number) == number:
-            return key
-    for key in candidates:
-        delivery = deliveries[key]
-        if delivery.carrier_code == item.get("carrier_code") and delivery.description == item.get(
-            "description"
-        ):
-            return key
-    return None
-
-
-def _find_stored(
-    items: list[dict[str, Any]], number: str, carrier: str, name: str | None
-) -> tuple[str, str] | None:
-    """The (tracking number, carrier) Parcel stored for a package, from the web app's list."""
-    wanted = normalize_number(number)
-    for item in items:
-        if (
-            item.get("carrier_code") == carrier
-            and normalize_number(str(item.get("tracking_number", ""))) == wanted
-        ):
-            return str(item["tracking_number"]), carrier
-    if name:
-        named = [
-            item
-            for item in items
-            if item.get("carrier_code") == carrier
-            and item.get("label") == name
-            and item.get("tracking_number")
-        ]
-        if named:
-            newest = max(named, key=lambda item: str(item.get("date_added") or ""))
-            return str(newest["tracking_number"]), carrier
-    return None
-
-
-def _delivered_time(
-    delivery: Delivery, latest: TrackingEvent | None, observed: datetime | None
-) -> str | None:
-    """Best guess for when a package was delivered."""
-    if delivery.status_code != DELIVERED:
-        return None
-    if latest and latest.when:
-        return latest.when.isoformat()
-    return observed.isoformat() if observed else None

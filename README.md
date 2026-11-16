@@ -54,6 +54,8 @@ Parcel's API can add and list packages but can't delete them. To delete from Hom
 3. Copy the value of the cookie named **`account_token`**.
 4. In Home Assistant, go to **Settings › Devices & services › Parcel › Configure**, paste it into **Parcel web sign-in**, and select **Submit**. Home Assistant checks it before saving.
 
+A saved sign-in is never shown again, so the box is empty the next time you open **Configure**; leave it empty to keep what's saved. To stop deleting from Home Assistant, turn on **Remove the saved web sign-in**.
+
 The sign-in lasts about a year (Parcel doesn't extend it when it's used). Home Assistant checks it once a day: it shows a repair notice about two weeks before it expires, and right away if it stops working early (for example, after signing out of the web app). Repeat these steps to paste the new one. Treat `account_token` like a password: it gives full access to your Parcel account. Parcel doesn't document these web calls, so a change on Parcel's side could stop deleting from working until this integration is updated.
 
 ## Automations
@@ -117,7 +119,8 @@ actions:
 | `sensor.parcel_ready_for_pickup` | Number of packages | `message`, `names`, `packages` |
 | `sensor.parcel_on_the_way` | Packages not yet delivered | `message`, `names`, `packages` |
 | `sensor.parcel_delivered_today` | Number of packages | `message`, `names`, `packages` |
-| `sensor.parcel_next_delivery` | When the next package is expected | `package`, `date_only` |
+| `sensor.parcel_next_delivery_day` | The next day a package is expected | `package`, `names`, `count` |
+| `sensor.parcel_next_delivery` | When the next delivery window starts, if a carrier gave a time | `package`, `window_end` |
 | `sensor.parcel_<package name>` | The package's status | `carrier`, `tracking_number`, `expected`, `last_update`, `last_location` |
 | `event.parcel_package_update` | Time of the last change | `event_type`, `message`, `description` |
 | `button.parcel_check_for_updates` | Checks Parcel now | |
@@ -151,17 +154,18 @@ With more than one Parcel account, add `config_entry_id` to say which one.
 
 Parcel allows **20 checks an hour** and **20 new packages a day** through its API, and failed adds count. The integration works within those limits:
 
-- It checks every 5 minutes by default (4 to 60 minutes in **Configure**).
+- It checks every 10 minutes by default (4 to 60 minutes in **Configure**).
 - Manual checks keep a few checks in reserve for the schedule, and the panel shows how many adds are left today.
 - After a restart, it reuses the last result if it's recent instead of checking again.
 - If Parcel answers "too many requests", the integration pauses its checks for 20 minutes (longer if Parcel asks), keeps showing the last known packages, and says so in the panel. Sensors keep their last values during a pause, and restarting Home Assistant doesn't cut it short.
+- If Parcel can't be reached, the last known packages stay on show for about half an hour (three checks, if that is longer) before sensors turn unavailable, so a short outage doesn't set off your automations. The panel says the last check failed.
 - The panel warns you when a tracking number doesn't match the chosen carrier, because Parcel rejects those and the rejected try still counts.
 
 Parcel's API returns Parcel's own cached copy of your deliveries, so changes reach Home Assistant a few minutes after they reach the Parcel app.
 
 ## Privacy
 
-Your API key and web sign-in are stored in Home Assistant like other integration credentials. Package details are kept in Home Assistant's `.storage` folder so restarts don't spend checks. The integration talks only to Parcel. Diagnostics downloads remove keys, tokens, tracking numbers, names and locations.
+Your API key and web sign-in are stored in Home Assistant like other integration credentials. Package details are kept in Home Assistant's `.storage` folder so restarts don't spend checks. The integration talks only to Parcel. Diagnostics downloads remove keys, tokens, tracking numbers, names, locations and the carriers' own update text.
 
 ## Troubleshooting
 
@@ -175,7 +179,9 @@ Your API key and web sign-in are stored in Home Assistant like other integration
 
 - The panel source is in `frontend-src/`. Run `npm ci --ignore-scripts && npm run build` there; the build is written to `custom_components/parcel/frontend/` and committed so HACS installs work.
 - The logo and icon are the SVG files in `brand/`. After changing one, run `npm run brand` in `frontend-src/`. It redraws the images Home Assistant and HACS show (`custom_components/parcel/brand/`) and the README banner and social preview (`brand/`); commit those too.
-- Tests and lint: `pip install -r requirements-test.txt`, then `pytest` and `ruff check custom_components scripts tests`. CI runs the same on every push and pull request.
+- Python tests, lint and types: `pip install -r requirements-test.txt`, then `pytest`, `ruff check custom_components scripts tests` and `mypy`.
+- Panel tests and lint: `npm test` and `npm run lint` in `frontend-src/`. What the panel works out (sections, wording, the day's timeline) is in `src/logic.js`, apart from how it's drawn, so it can be tested without a browser.
+- CI runs all of these on every push and pull request.
 - Releases are made with the **Release** workflow on GitHub; see [docs/RELEASING.md](docs/RELEASING.md).
 - Where each detail about Parcel came from is recorded in [docs/SOURCES.md](docs/SOURCES.md).
 
