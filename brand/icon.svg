@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>Parcel for Home Assistant</title>
+  <defs>
+    <!-- The rounded outline of the box. The faces are drawn oversized and clipped to it. -->
+    <clipPath id="box-outline">
+      <path d="M242.2 5.73A36 36 0 0 1 269.8 5.73L486.8 95.79A36 36 0 0 1 509 129.04L509 382.96A36 36 0 0 1 486.8 416.21L269.8 506.27A36 36 0 0 1 242.2 506.27L25.2 416.21A36 36 0 0 1 3 382.96L3 129.04A36 36 0 0 1 25.2 95.79Z"/>
+    </clipPath>
+    <linearGradient id="box-top" gradientUnits="userSpaceOnUse" x1="256" y1="0" x2="256" y2="210">
+      <stop offset="0" stop-color="#F6B58B"/>
+      <stop offset="1" stop-color="#EFA070"/>
+    </linearGradient>
+    <linearGradient id="box-left" gradientUnits="userSpaceOnUse" x1="0" y1="105" x2="0" y2="512">
+      <stop offset="0" stop-color="#E78657"/>
+      <stop offset="1" stop-color="#DA7243"/>
+    </linearGradient>
+    <linearGradient id="box-right" gradientUnits="userSpaceOnUse" x1="0" y1="105" x2="0" y2="512">
+      <stop offset="0" stop-color="#CE683F"/>
+      <stop offset="1" stop-color="#BC5431"/>
+    </linearGradient>
+  </defs>
+  <g clip-path="url(#box-outline)">
+    <!-- Left face (lit), right face (in shade), top -->
+    <rect width="512" height="512" fill="url(#box-left)"/>
+    <polygon points="256,210 549,88.4 549,407 256,552" fill="url(#box-right)"/>
+    <polygon points="256,210 3,105 -37,65 256,-40 549,65 509,105" fill="url(#box-top)"/>
+    <!-- Tape over the top, folded down the left face, with a soft shadow under the flap -->
+    <polygon points="100.41,145.43 158.6,169.58 411.6,64.57 353.41,40.43" fill="#FFE7D3"/>
+    <path d="M100.41 145.43L158.6 169.58L158.6 238.59A8 8 0 0 1 147.53 245.98L105.34 228.47A8 8 0 0 1 100.41 221.08Z" fill="#9A3F1E" fill-opacity="0.16"/>
+    <path d="M100.41 145.43L158.6 169.58L158.6 233.59A8 8 0 0 1 147.53 240.98L105.34 223.47A8 8 0 0 1 100.41 216.08Z" fill="#FBD6BA"/>
+    <!-- Light catching the front edges -->
+    <path d="M3 105L256 210L509 105" fill="none" stroke="#FFFFFF" stroke-opacity="0.13" stroke-width="9" stroke-linejoin="round"/>
+    <path d="M3 105L256 210L509 105" fill="none" stroke="#FFFFFF" stroke-opacity="0.3" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M256 210L256 512" fill="none" stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="3"/>
+    <!-- The house on the right face, sheared to lie flat on it -->
+    <path transform="matrix(1 -0.4150 0 1 256 210) translate(60.5 84.4) scale(1.1)" d="M53.88 5.69A9 9 0 0 1 66.12 5.69L112.17 48.44A12 12 0 0 1 116 57.23L116 120A12 12 0 0 1 104 132L16 132A12 12 0 0 1 4 120L4 57.23A12 12 0 0 1 7.83 48.44ZM45 132V102a15 15 0 0 1 30 0V132Z" fill="#FFE2CC" fill-rule="evenodd"/>
+  </g>
+</svg>

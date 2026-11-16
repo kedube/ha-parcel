@@ -47,29 +47,30 @@ jobs:
     name: HACS check
     runs-on: ubuntu-latest
     steps:
+      # Includes HACS's brand check, which looks for custom_components/parcel/brand/icon.png.
       - uses: hacs/action@main
         with:
           category: integration
-          # Brand images are only needed for a listing in the HACS default store.
-          ignore: brands
 
   panel:
-    name: Panel build is up to date
+    name: Panel and brand images are up to date
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
-      - name: Build the panel
+      - name: Build the panel and the brand images
         working-directory: frontend-src
         run: |
           npm ci --ignore-scripts
           npm run build
-      - name: The committed build matches the source
+          npm run brand
+      - name: The committed builds match their sources
         run: |
-          if [ -n "$(git status --porcelain -- custom_components/parcel/frontend)" ]; then
-            git status --short -- custom_components/parcel/frontend
-            echo "::error::custom_components/parcel/frontend is out of date. Run 'npm run build' in frontend-src and commit the result."
+          built=(custom_components/parcel/frontend custom_components/parcel/brand brand)
+          if [ -n "$(git status --porcelain -- "${built[@]}")" ]; then
+            git status --short -- "${built[@]}"
+            echo "::error::Built files are out of date. In frontend-src, run 'npm run build' (panel) and 'npm run brand' (logo and icon), then commit the result."
             exit 1
           fi

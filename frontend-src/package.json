@@ -2,12 +2,13 @@
   "name": "ha-parcel-panel",
   "version": "0.0.0",
   "private": true,
-  "description": "Source for the Packages sidebar panel in the Parcel integration for Home Assistant",
+  "description": "Source for the Packages sidebar panel in the Parcel integration for Home Assistant, and the build for its brand images",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "watch": "node build.mjs --watch"
+    "watch": "node build.mjs --watch",
+    "brand": "node build-brand.mjs"
   },
   "dependencies": {
     "@mdi/js": "7.4.47",
@@ -15,6 +16,7 @@
   },
   "devDependencies": {
     "@fontsource/outfit": "5.3.0",
+    "@resvg/resvg-wasm": "2.6.2",
     "esbuild": "0.28.2"
   }
 }

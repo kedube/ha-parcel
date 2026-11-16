@@ -1,8 +1,10 @@
-# Parcel for Home Assistant
+<h1 align="center">
+  <img src="https://raw.githubusercontent.com/kedube/ha-parcel/main/brand/banner.png" alt="Parcel for Home Assistant">
+</h1>
 
 Follow your [Parcel](https://parcelapp.net) deliveries in Home Assistant. You get a **Packages** sidebar panel to see, add and delete packages, plus sensors, events and automation triggers such as "3 packages are out for delivery" and "Your coffee grinder was delivered".
 
-This is an unofficial integration. It isn't made by or affiliated with Parcel.
+This is an unofficial integration. It isn't made by or affiliated with Parcel. Its logo was drawn for this project in the style of the Parcel app's icon; it isn't Parcel's own artwork.
 
 ## What you get
 
@@ -172,10 +174,11 @@ Your API key and web sign-in are stored in Home Assistant like other integration
 ## Development
 
 - The panel source is in `frontend-src/`. Run `npm ci --ignore-scripts && npm run build` there; the build is written to `custom_components/parcel/frontend/` and committed so HACS installs work.
+- The logo and icon are the SVG files in `brand/`. After changing one, run `npm run brand` in `frontend-src/`. It redraws the images Home Assistant and HACS show (`custom_components/parcel/brand/`) and the README banner and social preview (`brand/`); commit those too.
 - Tests and lint: `pip install -r requirements-test.txt`, then `pytest` and `ruff check custom_components scripts tests`. CI runs the same on every push and pull request.
 - Releases are made with the **Release** workflow on GitHub; see [docs/RELEASING.md](docs/RELEASING.md).
 - Where each detail about Parcel came from is recorded in [docs/SOURCES.md](docs/SOURCES.md).
 
 ## License
 
-[GNU Affero General Public License v3.0](LICENSE). The bundled Outfit font is under the SIL Open Font License (`custom_components/parcel/frontend/fonts/OFL.txt`).
+[GNU Affero General Public License v3.0](LICENSE), including the logo and icon in `brand/`. The bundled Outfit font is under the SIL Open Font License (`custom_components/parcel/frontend/fonts/OFL.txt`). "Parcel" and the Parcel app's icon belong to Parcel's developer.

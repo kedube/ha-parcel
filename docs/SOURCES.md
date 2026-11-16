@@ -27,6 +27,15 @@ Read first-hand from the public JavaScript that web.parcelapp.net serves (`/js/3
 
 - Home Assistant's developer documentation, and the signatures of the platform functions an integration must call (config flows, coordinators, entities, panels, websocket commands, device triggers, repairs), read from an installed copy of Home Assistant.
 
+## Logo and icon
+
+The box logo was drawn from scratch for this integration; the drawings are the SVG files in `brand/`.
+
+- The Parcel app's own icon (from the installed Mac app, version 8.7.1) was looked at on 2026-11-15 for its subject and colors: a terracotta cardboard box with cream tape on a cream background. Nothing was traced or copied from it, and no Parcel artwork is in this repository. The proportions, lighting and details are this project's own: the tape folds over the left face, and a small house stands where Parcel's icon has an arrow and a label.
+- The lettering is Outfit SemiBold and Medium, converted to outlines.
+- Image names and sizes follow Home Assistant's [brand image guide](https://contributors.home-assistant.io/core/integrations/brands/) and the [2026.3 announcement](https://contributors.home-assistant.io/blog/2026/02/24/brands-proxy-api/) that custom integrations can ship a `brand/` folder. HACS's [brand check](https://www.hacs.xyz/docs/publish/include/) reads the same folder.
+- No other integration's brand images were looked at.
+
 ## Disclosure
 
 Before the from-scratch requirement was set, the README, one documentation page and a few short excerpts of another Parcel integration ([jmdevita/parcel-ha](https://github.com/jmdevita/parcel-ha)) were briefly viewed while checking whether deleting was possible. Nothing from it was used. The delete mechanism was then confirmed independently from Parcel's own web app, as described above.
@@ -37,3 +46,4 @@ Before the from-scratch requirement was set, the README, one documentation page 
 - [Material Design Icons](https://pictogrammers.com/library/mdi/) via `@mdi/js` (Apache 2.0).
 - [Outfit](https://fonts.google.com/specimen/Outfit) via `@fontsource/outfit` (SIL Open Font License 1.1).
 - [esbuild](https://esbuild.github.io) (MIT), build-time only.
+- [resvg](https://github.com/yisibl/resvg-js) via `@resvg/resvg-wasm` (MPL-2.0), build-time only: it draws the brand PNGs from the SVG files.
