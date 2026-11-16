@@ -255,6 +255,9 @@
     "delete_failed": {
       "message": "Couldn't delete the package: {error}"
     },
+    "delete_ambiguous": {
+      "message": "Nothing was deleted. Parcel lists this number in a way that doesn't say which package it is, as with an Amazon order shipped in parts. Delete it in the Parcel app."
+    },
     "delete_not_confirmed": {
       "message": "Parcel said the package was deleted, but it's still listed. Try again, or delete it in the Parcel app."
     },

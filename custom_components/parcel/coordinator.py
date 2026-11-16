@@ -48,7 +48,7 @@ from .const import (
     RATE_LIMIT_MAX_PAUSE,
     READS_PER_HOUR,
 )
-from .matching import find_stored, lists_any, match_pending, same_package
+from .matching import find_stored, lists_any, lists_number, match_pending, same_package
 from .models import (
     NOT_FOUND,
     STATUS_SLUGS,
@@ -702,11 +702,18 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
                 items,
                 number,
                 carrier,
+                extra=delivery.extra_information if delivery else None,
                 unlisted_name=name if delivery is None else None,
                 listed_numbers={
                     normalize_number(item.tracking_number) for item in snapshot.deliveries.values()
                 },
             )
+            if stored is None and lists_number(items, number, carrier):
+                # Parcel has the number, but not so that it says which package this is
+                # (say, an Amazon order shipped in parts): never take it as deleted.
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN, translation_key="delete_ambiguous"
+                )
             if stored is None:
                 self._check_not_found(items, key, listed=delivery is not None)
             else:

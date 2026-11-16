@@ -47,30 +47,63 @@ def match_pending(
     return None
 
 
+def web_number(item: Mapping[str, Any]) -> tuple[str, str]:
+    """A tracking number in the web app's list: normalized, and the code after its "@".
+
+    The web app adds a code of its own to some numbers. An Amazon order is
+    "<order number>@<code>" there, where Parcel's API gives the order number as the
+    tracking number and the code as extra_information.
+    """
+    number, _, code = str(item.get("tracking_number", "")).partition("@")
+    return normalize_number(number), code
+
+
+def lists_number(items: Sequence[Mapping[str, Any]], number: str, carrier: str) -> bool:
+    """Whether the web app's list has this carrier and number, with any code or none."""
+    wanted = normalize_number(number.partition("@")[0])
+    return any(
+        item.get("carrier_code") == carrier and web_number(item)[0] == wanted for item in items
+    )
+
+
 def find_stored(
     items: Sequence[Mapping[str, Any]],
     number: str,
     carrier: str,
     *,
+    extra: str | None = None,
     unlisted_name: str | None = None,
     listed_numbers: Collection[str] = (),
 ) -> tuple[str, str] | None:
     """The (tracking number, carrier) Parcel's web app holds for a package.
 
-    The number decides. Parcel numbers placeholder packages itself, so for a
-    placeholder it hasn't listed through its API yet (pass its name as unlisted_name)
-    the name is tried as well. Even then, a package that is already listed (normalized
-    numbers in listed_numbers) or already delivered is never picked, so an older
-    package that merely shares the name can't be mistaken for the one looked up.
+    The number decides. Where the web app adds a code to it, the code must be the
+    package's extra_information (pass it as extra), which tells apart the shipments
+    of one Amazon order; a number given with its "@<code>" matches only that one.
+    None when no package fits, or when several do and nothing tells them apart.
+
+    Parcel numbers placeholder packages itself, so for a placeholder it hasn't listed
+    through its API yet (pass its name as unlisted_name) the name is tried as well.
+    Even then, a package that is already listed (normalized numbers in
+    listed_numbers) or already delivered is never picked, so an older package that
+    merely shares the name can't be mistaken for the one looked up.
     """
-    wanted = normalize_number(number)
+    wanted, at, code = number.partition("@")
+    wanted = normalize_number(wanted)
+    fits = []
     for item in items:
-        if (
-            item.get("carrier_code") == carrier
-            and normalize_number(str(item.get("tracking_number", ""))) == wanted
-        ):
-            return str(item["tracking_number"]), carrier
-    if unlisted_name is None or carrier != PLACEHOLDER_CARRIER:
+        item_number, item_code = web_number(item)
+        if item.get("carrier_code") != carrier or item_number != wanted:
+            continue
+        if at:
+            if item_code == code:
+                fits.append(item)
+        elif not item_code or not extra or item_code == extra:
+            # A code that isn't the package's extra_information is another shipment.
+            fits.append(item)
+    if len(fits) == 1:
+        return str(fits[0]["tracking_number"]), carrier
+    if fits or unlisted_name is None or carrier != PLACEHOLDER_CARRIER:
         return None
     named = [
         item
@@ -79,7 +112,7 @@ def find_stored(
         and item.get("label") == unlisted_name
         and item.get("tracking_number")
         and item.get("status_code") != DELIVERED
-        and normalize_number(str(item["tracking_number"])) not in listed_numbers
+        and web_number(item)[0] not in listed_numbers
     ]
     if not named:
         return None
@@ -93,7 +126,7 @@ def lists_any(items: Sequence[Mapping[str, Any]], numbers: Collection[str]) -> b
     Every package on its way is in the account's web list, so a list holding none of
     the account's packages is another account's (or didn't come through whole).
     """
-    return any(normalize_number(str(item.get("tracking_number", ""))) in numbers for item in items)
+    return any(web_number(item)[0] in numbers for item in items)
 
 
 def delivered_time(

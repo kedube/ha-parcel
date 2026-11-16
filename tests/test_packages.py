@@ -267,6 +267,49 @@ async def test_a_sign_in_for_another_account_deletes_nothing(
     assert events == []
 
 
+ORDER = "113-4567890-1234567"  # an Amazon order as Parcel's API gives it
+STORED_ORDER = f"{ORDER}@Ab3Cd9EfG"  # and as its web app holds it
+
+
+async def test_an_amazon_order_is_deleted_under_the_web_apps_number(
+    hass: HomeAssistant,
+    mock_parcel: SimpleNamespace,
+    config_entry: MockConfigEntry,
+    deliveries: list,
+) -> None:
+    """The only package on its way; it was once taken as deleted elsewhere and hidden."""
+    deliveries[:] = [raw(ORDER, "amzlus", "Kettle", 4, extra_information="Ab3Cd9EfG")]
+    await setup(hass, config_entry)
+    coordinator = config_entry.runtime_data
+    stored = {"tracking_number": STORED_ORDER, "carrier_code": "amzlus", "label": "Kettle"}
+    mock_parcel.web_list.side_effect = [[stored], []]
+    await coordinator.async_delete_package(f"amzlus:{ORDER}")
+    mock_parcel.web_delete.assert_awaited_once_with(STORED_ORDER, "amzlus")
+    assert f"amzlus:{ORDER}" not in coordinator.data.deliveries
+
+
+async def test_a_number_parcel_lists_ambiguously_is_neither_deleted_nor_hidden(
+    hass: HomeAssistant,
+    mock_parcel: SimpleNamespace,
+    config_entry: MockConfigEntry,
+    deliveries: list,
+) -> None:
+    """Two shipments of one order, and nothing to say which one this is."""
+    deliveries[:] = [raw(ORDER, "amzlus", "Kettle", 4)]
+    await setup(hass, config_entry)
+    coordinator = config_entry.runtime_data
+    mock_parcel.web_list.side_effect = None
+    mock_parcel.web_list.return_value = [
+        {"tracking_number": STORED_ORDER, "carrier_code": "amzlus", "label": "Kettle"},
+        {"tracking_number": f"{ORDER}@Hj7Kl2MnP", "carrier_code": "amzlus", "label": "Mugs"},
+    ]
+    with pytest.raises(HomeAssistantError) as raised:
+        await coordinator.async_delete_package(f"amzlus:{ORDER}")
+    assert raised.value.translation_key == "delete_ambiguous"
+    mock_parcel.web_delete.assert_not_awaited()
+    assert f"amzlus:{ORDER}" in coordinator.data.deliveries
+
+
 async def test_deleting_an_add_never_takes_an_older_namesake(
     hass: HomeAssistant, mock_parcel: SimpleNamespace, config_entry: MockConfigEntry
 ) -> None:

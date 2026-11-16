@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import issue_registry as ir
 
+from .conftest import raw
 from custom_components.parcel.api import (
     ParcelAuthError,
     ParcelConnectionError,
@@ -299,6 +300,36 @@ async def test_saving_options_restarts_the_account(
         await hass.async_block_till_done()
     assert config_entry.runtime_data.update_interval == timedelta(minutes=15)
     assert config_entry.runtime_data.web_client is not None
+
+
+async def test_a_sign_in_whose_list_writes_amazon_orders_its_own_way_is_accepted(
+    hass: HomeAssistant,
+    mock_parcel: SimpleNamespace,
+    config_entry: MockConfigEntry,
+    deliveries: list,
+) -> None:
+    """Only Amazon orders on their way, which the web app writes "<order number>@<code>"."""
+    deliveries[:] = [
+        raw("113-4567890-1234567", "amzlus", "Kettle", 4, extra_information="Ab3Cd9EfG")
+    ]
+    config_entry.add_to_hass(hass)
+    with patch("custom_components.parcel.async_register_panel", new_callable=AsyncMock):
+        assert await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done()
+        mock_parcel.web_list.side_effect = None
+        mock_parcel.web_list.return_value = [
+            {
+                "tracking_number": "113-4567890-1234567@Ab3Cd9EfG",
+                "carrier_code": "amzlus",
+                "label": "Kettle",
+            }
+        ]
+        form = {"scan_interval": 5, "package_sensors": True, CONF_ACCOUNT_TOKEN: "new-token"}
+        result = await hass.config_entries.options.async_init(config_entry.entry_id)
+        result = await hass.config_entries.options.async_configure(result["flow_id"], form)
+        await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert config_entry.options[CONF_ACCOUNT_TOKEN] == "new-token"
 
 
 async def test_a_sign_in_from_another_account_is_refused(

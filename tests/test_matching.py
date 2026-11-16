@@ -10,6 +10,7 @@ from custom_components.parcel.matching import (
     delivered_time,
     find_stored,
     lists_any,
+    lists_number,
     match_pending,
     same_package,
     split_key,
@@ -132,6 +133,43 @@ def test_a_delivered_placeholder_is_not_the_new_one() -> None:
     assert find_stored([old, new], "HATEST3", "pholder", unlisted_name="Birthday gift") == (
         "450000000000000000003",
         "pholder",
+    )
+
+
+# An Amazon order as Parcel's API gives it, and the code the web app adds to it.
+ORDER = "113-4567890-1234567"
+KETTLE = f"{ORDER}@Ab3Cd9EfG"
+MUGS = f"{ORDER}@Hj7Kl2MnP"
+
+
+def test_an_amazon_order_is_found_under_the_web_apps_own_number() -> None:
+    """The web app writes "<order number>@<code>"; the API gives the order number alone."""
+    items = [web(KETTLE, "amzlus", "Kettle")]
+    assert lists_any(items, {"11345678901234567"})
+    assert find_stored(items, ORDER, "amzlus", extra="Ab3Cd9EfG") == (KETTLE, "amzlus")
+    assert find_stored(items, ORDER, "amzlus") == (KETTLE, "amzlus")
+    # Checking that a delete went through looks for the web app's own number.
+    assert find_stored(items, KETTLE, "amzlus") == (KETTLE, "amzlus")
+    assert find_stored(items, MUGS, "amzlus") is None
+
+
+def test_the_shipments_of_one_order_are_told_apart_by_their_code() -> None:
+    items = [web(KETTLE, "amzlus", "Kettle"), web(MUGS, "amzlus", "Mugs")]
+    assert find_stored(items, ORDER, "amzlus", extra="Hj7Kl2MnP") == (MUGS, "amzlus")
+    # Without the code there's no telling which, so neither is picked.
+    assert find_stored(items, ORDER, "amzlus") is None
+    assert lists_number(items, ORDER, "amzlus")
+    # A shipment the list doesn't hold isn't swapped for another of the same order.
+    assert find_stored(items[:1], ORDER, "amzlus", extra="Hj7Kl2MnP") is None
+    assert not lists_number(items, ORDER, "usps")
+
+
+def test_extra_information_that_is_not_a_code_changes_nothing() -> None:
+    """Most carriers' numbers carry no code, whatever their extra_information holds."""
+    items = [web("1Z999AA10123456784", "ups", "Coffee grinder")]
+    assert find_stored(items, "1Z999AA10123456784", "ups", extra="94107") == (
+        "1Z999AA10123456784",
+        "ups",
     )
 
 

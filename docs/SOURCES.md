@@ -20,6 +20,7 @@ Read first-hand from the public JavaScript that web.parcelapp.net serves (`/js/3
 
 - Error responses, probed with made-up credentials: HTTP 401 `Account not found` for a bad API key, and `failed_verification` or `missing_data` from the web app for a bad or missing sign-in.
 - Real responses from the maintainer's own account: Amazon's date-only ETAs (`… 00:00:00`) and `--//--` event dates. Parcel generates its own tracking number for placeholder packages, and the web app's delete reports success even when nothing matched.
+- The web app's list writes an Amazon order as `<order number>@<code>`, where Parcel's API gives the order number as `tracking_number` and the code as `extra_information` (seen on 2026-11-16). The integration compares numbers up to the `@` and uses the code to tell apart packages that share an order number.
 - The web sign-in cookie (`account_token`) is issued with a 360-day lifetime and isn't re-issued when it's used, so the integration counts down from when the token was entered.
 - Rate limiting, seen once on 2026-11-15: the deliveries endpoint answered HTTP 429 after about 10 API reads in the preceding hour (the documented limit is 20), during a development session that also made about a dozen web-app calls. Requests kept being rejected for 3 to 5 minutes, including five quick retries. The cause isn't known; Parcel's limiter may count more than the documented endpoint, or react to bursts. The integration therefore treats any 429 as "stop asking for a while" instead of relying on its own count.
 
