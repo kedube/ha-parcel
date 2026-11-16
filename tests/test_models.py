@@ -11,6 +11,7 @@ from custom_components.parcel.models import (
     guess_icon,
     join_names,
     normalize_number,
+    package_key,
     parse_parcel_datetime,
 )
 
@@ -168,3 +169,50 @@ def test_join_names() -> None:
     assert join_names(["A"]) == "A"
     assert join_names(["A", "B"]) == "A and B"
     assert join_names(["A", "B", "C"]) == "A, B and C"
+
+
+def test_a_date_that_cannot_exist_is_no_date() -> None:
+    """February 30 or hour 25 from a carrier: no date, but the text and the package stay."""
+    assert parse_parcel_datetime("2026-02-30 10:00:00", TZ) is None
+    assert parse_parcel_datetime("2026-11-16 25:00:00", TZ) is None
+    delivery = Delivery.from_api(
+        {
+            "tracking_number": "1Z999AA10123456784",
+            "carrier_code": "ups",
+            "description": "Coffee grinder",
+            "status_code": 2,
+            "events": [{"event": "Arrived", "date": "2026-02-30 10:00:00"}],
+            "date_expected": "2026-11-16 25:00:00",
+        },
+        TZ,
+    )
+    assert delivery.events[0].when is None
+    assert delivery.events[0].when_text == "2026-02-30 10:00:00"
+    assert delivery.eta_start is None
+
+
+def test_each_amazon_shipment_has_a_key_of_its_own() -> None:
+    """Parcel tracks Amazon by shipment: the order number plus the shipment ID."""
+    assert package_key("amzlus", "113-4567890-1234567", "Ab3Cd9EfG") == (
+        "amzlus:113-4567890-1234567@Ab3Cd9EfG"
+    )
+    assert package_key("amzluk", "205-1234567-7654321", "Hj7Kl2MnP") == (
+        "amzluk:205-1234567-7654321@Hj7Kl2MnP"
+    )
+    # Without a shipment ID, and for other carriers' extra details, the number alone.
+    assert package_key("amzlus", "TBA312345678901") == "amzlus:TBA312345678901"
+    assert package_key("dpd", "01234567890123", "94107") == "dpd:01234567890123"
+    parts = [
+        Delivery.from_api(
+            {
+                "tracking_number": "113-4567890-1234567",
+                "carrier_code": "amzlus",
+                "description": name,
+                "status_code": 2,
+                "extra_information": shipment,
+            },
+            TZ,
+        )
+        for name, shipment in (("Kettle", "Ab3Cd9EfG"), ("Mugs", "Hj7Kl2MnP"))
+    ]
+    assert parts[0].key != parts[1].key

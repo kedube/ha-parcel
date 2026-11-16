@@ -42,7 +42,7 @@ async def test_subscribing_streams_the_packages(
     assert first["type"] == "event"
     assert first["event"].keys() == {"entries"}
     entry = first["event"]["entries"][0]
-    assert {d["key"] for d in entry["deliveries"]} == {UPS_KEY, "amzlus:TBA312345678901"}
+    assert {d["key"] for d in entry["deliveries"]} == {UPS_KEY, "amzlus:TBA312345678901@123-456"}
     assert entry["adds_left"] == 20
 
     # A change at Parcel reaches the open panel.

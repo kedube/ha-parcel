@@ -79,7 +79,7 @@ class WebSignInMonitor:
         if self.client is None or self._unsub_daily is not None:
             return
         self._unsub_daily = async_track_time_interval(
-            self.hass, self.async_check, WEB_SIGN_IN_CHECK_INTERVAL
+            self.hass, self._start_check, WEB_SIGN_IN_CHECK_INTERVAL
         )
         self._unsub_first = async_call_later(self.hass, WEB_SIGN_IN_FIRST_CHECK, self._first_check)
 
@@ -91,9 +91,17 @@ class WebSignInMonitor:
                 cancel()
                 setattr(self, name, None)
 
-    async def _first_check(self, _now: datetime) -> None:
+    @callback
+    def _first_check(self, now: datetime) -> None:
         self._unsub_first = None
-        await self.async_check()
+        self._start_check(now)
+
+    @callback
+    def _start_check(self, _now: datetime | None = None) -> None:
+        """Check as a task of the account's, so unloading or removing it cancels the check."""
+        self._entry.async_create_background_task(
+            self.hass, self.async_check(), f"{DOMAIN} web sign-in check"
+        )
 
     def remaining(self) -> timedelta | None:
         """How long until the pasted token reaches its 360-day lifetime, if known."""

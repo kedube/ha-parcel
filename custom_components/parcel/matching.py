@@ -18,9 +18,15 @@ def split_key(key: str) -> tuple[str, str]:
 
 
 def same_package(key: str, carrier_code: str, tracking_number: str) -> bool:
-    """Whether a key names this carrier and number (spaces, dashes and case aside)."""
+    """Whether a key names this carrier and number (spaces, dashes and case aside).
+
+    An Amazon shipment's key adds "@<shipment ID>" to the order number; any shipment
+    of the order counts.
+    """
     carrier, number = split_key(key)
-    return carrier == carrier_code and normalize_number(number) == normalize_number(tracking_number)
+    return carrier == carrier_code and normalize_number(
+        number.partition("@")[0]
+    ) == normalize_number(tracking_number.partition("@")[0])
 
 
 def match_pending(
@@ -28,8 +34,9 @@ def match_pending(
 ) -> str | None:
     """The newly listed package that is this pending add.
 
-    Same carrier and same number. Failing that, same carrier and same name, because
-    Parcel stores a number of its own for placeholder packages.
+    Same carrier and same number. Parcel stores a number of its own for placeholder
+    packages, so for those, failing that, same carrier and same name. Any other
+    package with the same name is a different package.
     """
     carrier = item.get("carrier_code")
     number = normalize_number(item.get("tracking_number", ""))
@@ -40,6 +47,8 @@ def match_pending(
             and normalize_number(delivery.tracking_number) == number
         ):
             return key
+    if carrier != PLACEHOLDER_CARRIER:
+        return None
     for key in candidates:
         delivery = deliveries[key]
         if delivery.carrier_code == carrier and delivery.description == item.get("description"):

@@ -273,6 +273,9 @@
     "choose_carrier": {
       "message": "More than one package has this tracking number. Add the carrier code."
     },
+    "choose_shipment": {
+      "message": "More than one shipment of this order is in Parcel. Delete the one you mean from the Packages panel, or give its number as the order number, @ and the shipment ID."
+    },
     "web_sign_in_other_account": {
       "message": "Nothing was deleted. The saved web sign-in doesn't list this account's packages, so it may be for a different Parcel account. Paste the right one in the integration's options."
     },

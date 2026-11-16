@@ -121,16 +121,18 @@ async def async_setup_entry(
             if enabled and data
             else {}
         )
-        if new := wanted.keys() - current:
-            keys = sorted(wanted[added] for added in new)
-            async_add_entities([ParcelPackageSensor(coordinator, key) for key in keys])
-            current.update(new)
+        # Stale sensors go first, so a package whose key changed (an Amazon shipment
+        # saved by an older version) gets its entity ID back rather than "_2".
         for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
             if reg_entry.domain != "sensor" or not reg_entry.unique_id.startswith(prefix):
                 continue
             if (gone := reg_entry.unique_id.removeprefix(prefix)) not in wanted:
                 registry.async_remove(reg_entry.entity_id)
                 current.discard(gone)
+        if new := wanted.keys() - current:
+            keys = sorted(wanted[added] for added in new)
+            async_add_entities([ParcelPackageSensor(coordinator, key) for key in keys])
+            current.update(new)
 
     sync_packages()
     entry.async_on_unload(coordinator.async_add_listener(sync_packages))

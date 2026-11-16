@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time, tzinfo
+from functools import lru_cache
 import re
 from typing import Any
 
@@ -143,6 +144,37 @@ def guess_icon(name: str | None) -> str:
     return DEFAULT_ICON
 
 
+def by_shipment(carrier_code: str) -> bool:
+    """Whether Parcel tracks this carrier's packages by shipment: Amazon's ("amzl…").
+
+    The order number is the tracking number and the shipment ID comes as
+    extra_information, so the shipments of one order share a number.
+    """
+    return carrier_code.startswith("amzl")
+
+
+def package_key(carrier_code: str, tracking_number: str, extra: str | None = None) -> str:
+    """How the integration tells packages apart: "carrier:number".
+
+    The shipments of one Amazon order are told apart by "@<shipment ID>" after the
+    order number, as in Parcel's web app.
+    """
+    if extra and by_shipment(carrier_code):
+        return f"{carrier_code}:{tracking_number}@{extra}"
+    return f"{carrier_code}:{tracking_number}"
+
+
+def listing_key(raw: Any) -> str | None:
+    """The key of a package in Parcel's list, even when the rest of it can't be read."""
+    if not isinstance(raw, Mapping):
+        return None
+    number = _clean(raw.get("tracking_number"))
+    carrier = _clean(raw.get("carrier_code"))
+    if not number or not carrier:
+        return None
+    return package_key(carrier, number, _clean(raw.get("extra_information")))
+
+
 def normalize_number(number: str) -> str:
     """Tracking number without spaces or dashes, uppercased, for matching."""
     return re.sub(r"[\s-]", "", number).upper()
@@ -181,19 +213,41 @@ def _parse_datetime(value: Any, tz: tzinfo) -> datetime | None:
     text = str(value).strip()
     if not any(ch.isdigit() for ch in text):
         return None
-    parsed = dt_util.parse_datetime(text)
-    if parsed is None:
-        for fmt in _DATE_FORMATS:
-            try:
-                parsed = datetime.strptime(text, fmt)
-                break
-            except ValueError:
-                continue
+    parsed = _parse_text(text)
     if parsed is None:
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=tz)
     return parsed
+
+
+# The format that last matched is tried first: one carrier writes all its dates alike.
+_FORMAT_ORDER = list(_DATE_FORMATS)
+
+
+@lru_cache(maxsize=4096)
+def _parse_text(text: str) -> datetime | None:
+    """A date as written, with its offset if it gives one.
+
+    Cached, because every check brings the same carrier updates again.
+    """
+    try:
+        parsed = dt_util.parse_datetime(text)
+    except ValueError:
+        # Well formed but impossible, like February 30: not a date.
+        return None
+    if parsed is not None:
+        return parsed
+    for fmt in _FORMAT_ORDER:
+        try:
+            parsed = datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+        if _FORMAT_ORDER[0] != fmt:
+            _FORMAT_ORDER.remove(fmt)
+            _FORMAT_ORDER.insert(0, fmt)
+        return parsed
+    return None
 
 
 def _clean(value: Any) -> str | None:
@@ -247,14 +301,18 @@ class Delivery:
     @classmethod
     def from_api(cls, raw: Mapping[str, Any], tz: tzinfo) -> Delivery:
         """Build from one item of Parcel's deliveries list."""
-        tracking_number = str(raw["tracking_number"]).strip()
-        carrier_code = str(raw["carrier_code"]).strip()
+        tracking_number = _clean(raw["tracking_number"])
+        carrier_code = _clean(raw["carrier_code"])
+        if not tracking_number or not carrier_code:
+            raise ValueError("A delivery without a tracking number or carrier")
+        extra_information = _clean(raw.get("extra_information"))
         try:
             status_code = int(raw.get("status_code", NOT_FOUND))
         except (TypeError, ValueError, OverflowError):
             status_code = NOT_FOUND
+        listed_events = raw.get("events")
         events: list[TrackingEvent] = []
-        for item in raw.get("events") or []:
+        for item in listed_events if isinstance(listed_events, list) else []:
             if not isinstance(item, Mapping):
                 continue
             text = _clean(item.get("event"))
@@ -274,13 +332,13 @@ class Delivery:
             )
         eta_start, eta_end, eta_date = _parse_eta(raw, tz)
         return cls(
-            key=f"{carrier_code}:{tracking_number}",
+            key=package_key(carrier_code, tracking_number, extra_information),
             tracking_number=tracking_number,
             carrier_code=carrier_code,
             description=_clean(raw.get("description")) or tracking_number,
             status_code=status_code,
             events=tuple(events),
-            extra_information=_clean(raw.get("extra_information")),
+            extra_information=extra_information,
             eta_start=eta_start,
             eta_end=eta_end,
             eta_date=eta_date,

@@ -69,6 +69,11 @@ async def _async_delete(call: ServiceCall) -> None:
     if not keys:
         raise ServiceValidationError(translation_domain=DOMAIN, translation_key="package_not_found")
     if len(keys) > 1:
+        if len({key.partition(":")[0] for key in keys}) == 1:
+            # One carrier for all of them: shipments of one Amazon order.
+            raise ServiceValidationError(
+                translation_domain=DOMAIN, translation_key="choose_shipment"
+            )
         raise ServiceValidationError(translation_domain=DOMAIN, translation_key="choose_carrier")
     await coordinator.async_delete_package(keys[0])
 

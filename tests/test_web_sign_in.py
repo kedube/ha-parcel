@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_fire_time_changed
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
@@ -18,8 +19,10 @@ from custom_components.parcel.const import (
     CONF_ACCOUNT_TOKEN,
     CONF_ACCOUNT_TOKEN_SET_AT,
     DOMAIN,
+    WEB_SIGN_IN_FIRST_CHECK,
     WEB_TOKEN_LIFETIME,
 )
+from custom_components.parcel.web_sign_in import expired_issue_id
 
 
 def entry_with_token_age(days_old: int) -> MockConfigEntry:
@@ -101,6 +104,28 @@ async def test_no_checks_without_web_sign_in(
     await setup(hass, entry)
     await entry.runtime_data.web_sign_in.async_check()
     mock_parcel.web_list.assert_not_called()
+
+
+async def test_a_check_cut_short_by_removing_the_account_leaves_no_notice(
+    hass: HomeAssistant, mock_parcel: SimpleNamespace, config_entry: MockConfigEntry
+) -> None:
+    """Removing the account stops a check still waiting on Parcel, so no repair outlives it."""
+    await setup(hass, config_entry)
+    answer = asyncio.Event()
+
+    async def slow_rejection(*_args: object) -> None:
+        await answer.wait()
+        raise ParcelWebAuthError("signed out")
+
+    mock_parcel.web_list.side_effect = slow_rejection
+    async_fire_time_changed(hass, dt_util.utcnow() + WEB_SIGN_IN_FIRST_CHECK + timedelta(seconds=1))
+    await asyncio.sleep(0)
+    mock_parcel.web_list.assert_called_once()
+    assert await hass.config_entries.async_remove(config_entry.entry_id)
+    answer.set()
+    await hass.async_block_till_done(wait_background_tasks=True)
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, expired_issue_id(config_entry.entry_id))
+    assert issue is None
 
 
 async def test_options_records_token_timestamp(

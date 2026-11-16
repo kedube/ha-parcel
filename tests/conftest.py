@@ -7,10 +7,13 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+from freezegun.api import FrozenDateTimeFactory
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.parcel.const import CONF_ACCOUNT_TOKEN, DOMAIN
+from homeassistant.core import HomeAssistant
+
+from custom_components.parcel.const import CONF_ACCOUNT_TOKEN, DOMAIN, UNLISTED_GRACE
 
 CARRIERS = {
     "ups": {"name": "UPS"},
@@ -27,6 +30,16 @@ CARRIERS = {
 def auto_enable_custom_integrations(enable_custom_integrations: Any) -> Generator[None]:
     """Let Home Assistant load custom_components/parcel."""
     yield
+
+
+async def check_until_gone(
+    hass: HomeAssistant, entry: MockConfigEntry, freezer: FrozenDateTimeFactory
+) -> None:
+    """Check Parcel twice, far enough apart that what both replies leave out is gone."""
+    await entry.runtime_data.async_refresh()
+    freezer.tick(UNLISTED_GRACE)
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
 
 
 def raw(

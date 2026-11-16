@@ -62,7 +62,7 @@ async def test_the_morning_briefing_reads_naturally(
         "2 packages arrive today: Dog food and Coffee grinder"
     )
 
-    deliveries.pop()
+    deliveries[-1]["date_expected"] = "2026-11-17 00:00:00"  # dog food comes tomorrow
     await config_entry.runtime_data.async_refresh()
     await hass.async_block_till_done()
     assert hass.states.get("sensor.parcel_arriving_today").state == "1"

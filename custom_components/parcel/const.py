@@ -72,6 +72,9 @@ FOLLOW_UP_REFRESH_SECONDS: Final = 120
 # How long things are remembered
 PENDING_TTL: Final = timedelta(hours=24)
 DELETED_TTL: Final = timedelta(hours=12)
+# A package missing from Parcel's reply counts as gone only once it has been missing
+# this long (two replies at least): Parcel sometimes leaves packages out of one.
+UNLISTED_GRACE: Final = timedelta(minutes=10)
 DELIVERED_SENSOR_RETENTION: Final = timedelta(days=2)
 CARRIER_LIST_MAX_AGE: Final = timedelta(days=1)
 

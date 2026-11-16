@@ -47,15 +47,26 @@ from .const import (
     RATE_LIMIT_BACKOFF,
     RATE_LIMIT_MAX_PAUSE,
     READS_PER_HOUR,
+    UNLISTED_GRACE,
 )
-from .matching import find_stored, lists_any, lists_number, match_pending, same_package
+from .matching import (
+    find_stored,
+    lists_any,
+    lists_number,
+    match_pending,
+    same_package,
+    split_key,
+)
 from .models import (
     NOT_FOUND,
     STATUS_SLUGS,
     Delivery,
+    by_shipment,
     detect_carriers,
     guess_icon,
+    listing_key,
     normalize_number,
+    package_key,
 )
 from .storage import ParcelStorage, PendingRecord
 from .summary import Summary, build_summary
@@ -153,6 +164,8 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         self._summary: tuple[date, Summary] | None = None
         # Adds on their way to Parcel, so a double submit doesn't spend two.
         self._adding: set[tuple[str, str]] = set()
+        # Keys Parcel has listed twice, so that's logged once.
+        self._duplicates: set[str] = set()
 
     @property
     def web_client(self) -> ParcelWebClient | None:
@@ -337,31 +350,143 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         self.async_set_updated_data(self._process(raw, fetched_at))
         return True
 
+    def _adopt_records(self, listings: list[Delivery], listed: set[str]) -> None:
+        """Give a newly keyed package what is remembered for it under another key.
+
+        A key changes when Parcel writes the number differently, or when an Amazon
+        shipment gains or loses its shipment ID (older versions keyed shipments by order
+        number alone). The other key must name the same carrier and number and
+        be missing from this reply. For Amazon, whose shipments share the order number,
+        the name must match too, so one shipment never takes over another's history.
+        When two listings could take the same record, the last listed does: older
+        versions showed that one.
+        """
+        known = self.storage.known
+        icons = self.storage.icons
+        for delivery in reversed(listings):
+            if delivery.key in known:
+                continue
+            shipment = by_shipment(delivery.carrier_code)
+            others = [
+                key
+                for key, record in known.items()
+                if key not in listed
+                and same_package(key, delivery.carrier_code, delivery.tracking_number)
+                and (not shipment or record["description"] == delivery.description)
+            ]
+            if len(others) != 1:
+                continue
+            old = others[0]
+            known[delivery.key] = known.pop(old)
+            if old in icons and delivery.key not in icons:
+                icons[delivery.key] = icons.pop(old)
+            self.storage.unlisted.pop(old, None)
+
+    def _deletion_for(self, delivery: Delivery) -> str | None:
+        """The delete marker hiding this package, if there is one.
+
+        A marker saved under another spelling of the same number counts too, except
+        for Amazon, where a marker is for one shipment only.
+        """
+        deleted = self.storage.deleted
+        if delivery.key in deleted:
+            return delivery.key
+        if by_shipment(delivery.carrier_code):
+            return None
+        return next(
+            (
+                key
+                for key in deleted
+                if same_package(key, delivery.carrier_code, delivery.tracking_number)
+            ),
+            None,
+        )
+
+    def _keep_unlisted(
+        self,
+        present: set[str],
+        before: Mapping[str, Delivery],
+        deliveries: dict[str, Delivery],
+        fetched_at: datetime,
+    ) -> set[str]:
+        """Remembered packages missing from this reply that aren't taken as gone yet.
+
+        Parcel sometimes leaves packages out of a reply, even all of them. Taking that
+        as final would announce them removed and then new, and lose their icons,
+        history and delete markers. So a package counts as gone only once it has been
+        missing for UNLISTED_GRACE; until then it is shown as it was last seen. Delete
+        markers wait just as long before they go.
+        """
+        known = self.storage.known
+        deleted = self.storage.deleted
+        unlisted = self.storage.unlisted
+        for key in [key for key in unlisted if key in present]:
+            del unlisted[key]
+        kept: set[str] = set()
+        for key in [*known, *deleted]:
+            if key in present:
+                continue
+            since = dt_util.parse_datetime(unlisted.setdefault(key, fetched_at.isoformat()))
+            if since is not None and fetched_at - since < UNLISTED_GRACE:
+                if key in known:
+                    kept.add(key)
+                    if key in before and key not in deleted:
+                        deliveries[key] = before[key]
+            elif key in deleted:
+                del deleted[key]
+        return kept
+
+    def _note_duplicate(self, delivery: Delivery) -> None:
+        """Parcel listed a package twice: keep the first listing, and say so once."""
+        if delivery.key in self._duplicates:
+            return
+        self._duplicates.add(delivery.key)
+        _LOGGER.warning(
+            "Parcel lists one %s package twice; showing its first listing",
+            self.carriers.name(delivery.carrier_code),
+        )
+
     def _process(self, raw: list[dict[str, Any]], fetched_at: datetime) -> ParcelSnapshot:
         tz = dt_util.get_default_time_zone()
         self.storage.prune(fetched_at)
-        deleted = self.storage.deleted
-        deliveries: dict[str, Delivery] = {}
-        listed: set[str] = set()
+        before = self.data.deliveries if self.data else {}
+        listings: dict[str, Delivery] = {}
+        unreadable: set[str] = set()
         for listing in raw:
             try:
                 delivery = Delivery.from_api(listing, tz)
             except (KeyError, TypeError, ValueError, OverflowError) as err:
-                # One odd package mustn't take the rest down with it.
+                # One odd package mustn't take the rest down with it. If it can still
+                # be told which package it is, that one stays as it was last seen.
                 _LOGGER.debug("Skipping a delivery in an unexpected format: %r", err)
+                if key := listing_key(listing):
+                    unreadable.add(key)
                 continue
-            listed.add(delivery.key)
-            if delivery.key not in deleted:
-                deliveries[delivery.key] = delivery
+            if delivery.key in listings:
+                self._note_duplicate(delivery)
+                continue
+            listings[delivery.key] = delivery
+        listed = listings.keys() | unreadable
+        self._adopt_records(list(listings.values()), listed)
+
+        deliveries: dict[str, Delivery] = {}
+        markers: set[str] = set()
+        for key, delivery in listings.items():
+            if marker := self._deletion_for(delivery):
+                markers.add(marker)
+            else:
+                deliveries[key] = delivery
+        for key in unreadable - listings.keys():
+            if key in before and key not in self.storage.deleted:
+                deliveries[key] = before[key]
         # A delete marker is only needed while Parcel's cached list still shows the
         # package. Once it's gone the marker goes too, so the same package shows up
         # again if it's added again later.
-        for key in [key for key in deleted if key not in listed]:
-            del deleted[key]
+        kept = self._keep_unlisted(listed | markers, before, deliveries, fetched_at)
 
         # Packages added from Home Assistant wait in "pending" until Parcel lists them.
-        # Parcel may store a different number (it generates one for placeholders), so a
-        # newly listed package with the same carrier and name also counts as a match.
+        # Parcel stores a number of its own for placeholders, so for those a newly
+        # listed package with the same carrier and name also counts as a match.
         known = self.storage.known
         unclaimed = [key for key in deliveries if key not in known]
         icons = self.storage.icons
@@ -379,11 +504,22 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
             if restored := PendingAdd.from_store(key, item):
                 pending[key] = restored
         # Icon choices go when their package does.
-        for key in [key for key in icons if key not in deliveries and key not in stored_pending]:
+        for key in [
+            key
+            for key in icons
+            if key not in deliveries and key not in stored_pending and key not in kept
+        ]:
             del icons[key]
 
-        changes = detect_changes(known, deliveries, fetched_at, announce=self.storage.initialized)
+        changes = detect_changes(
+            known, deliveries, fetched_at, announce=self.storage.initialized, keep=kept
+        )
         self.storage.mark_initialized()
+        unlisted = self.storage.unlisted
+        for key in [
+            key for key in unlisted if key not in known and key not in self.storage.deleted
+        ]:
+            del unlisted[key]
         if changes:
             # Fire after the new data is in place, so automations see current counts.
             events = [self._event_data(change) for change in changes]
@@ -435,7 +571,8 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
     def find_keys(self, tracking_number: str, carrier_code: str | None = None) -> list[str]:
         """Keys of tracked packages (listed, or just added) with this tracking number.
 
-        Spaces, dashes and letter case in the number don't matter.
+        Spaces, dashes and letter case in the number don't matter. One shipment of an
+        Amazon order can be named as "<order number>@<shipment ID>", as in its key.
         """
         snapshot = self.data or ParcelSnapshot()
         wanted = normalize_number(tracking_number)
@@ -446,7 +583,8 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         return [
             key
             for key, item in tracked
-            if normalize_number(item.tracking_number) == wanted
+            if wanted
+            in (normalize_number(item.tracking_number), normalize_number(split_key(key)[1]))
             and (carrier_code is None or item.carrier_code == carrier_code)
         ]
 
@@ -644,7 +782,7 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         finally:
             self._adding.discard(claim)
 
-        key = f"{carrier}:{number}"
+        key = package_key(carrier, number)
         added = PendingAdd(key, number, carrier, name, now)
         self.storage.pending[key] = added.to_store()
         # If this package was deleted here earlier, it's wanted again.
@@ -745,8 +883,11 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
             "description": name,
             "status": delivery.status_code if delivery else NOT_FOUND,
         }
-        snapshot.deliveries.pop(key, None)
-        snapshot.pending.pop(key, None)
+        # A check may have finished while Parcel's web app was answering, replacing
+        # the snapshot read above: take the package out of what is current now.
+        if (current := self.data) is not None:
+            current.deliveries.pop(key, None)
+            current.pending.pop(key, None)
         self.storage.async_schedule_save()
         self.async_update_listeners()
         self._emit(self._event_data(removal(key, record, REASON_DELETED)))

@@ -158,6 +158,8 @@ data:
   tracking_number: "1Z999AA10123456784"
 ```
 
+Parcel tracks an Amazon order by shipment, so one order can show up as several packages. To delete one of them with this action, give its number as the order number, `@` and the shipment ID; the event data's `key` ends with it, as in `amzlus:113-4567890-1234567@Ab3Cd9EfG`. Deleting from the panel needs none of this.
+
 ```yaml
 # Check Parcel now
 action: parcel.refresh
@@ -176,6 +178,7 @@ Parcel allows **20 checks an hour** and **20 new packages a day** through its AP
 - After a restart, it reuses the last result if it's recent instead of checking again.
 - If Parcel answers "too many requests", the integration pauses its checks for 20 minutes (longer if Parcel asks), keeps showing the last known packages, and says so in the panel. Sensors keep their last values during a pause, and restarting Home Assistant doesn't cut it short.
 - If Parcel can't be reached, the last known packages stay on show for about half an hour (three checks, if that is longer) before sensors turn unavailable, so a short outage doesn't set off your automations. The panel says the last check failed.
+- If Parcel's reply leaves out a package it listed before, the package stays as it was until it has been missing for 10 minutes, over at least two checks. A reply that briefly lists nothing therefore doesn't announce every package as removed and then new, and doesn't lose their chosen icons. A package really removed in Parcel goes from Home Assistant one check later than it otherwise would.
 - The panel warns you when a tracking number doesn't match the chosen carrier, because Parcel rejects those and the rejected try still counts.
 
 Parcel's API returns Parcel's own cached copy of your deliveries, so changes reach Home Assistant a few minutes after they reach the Parcel app.

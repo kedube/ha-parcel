@@ -31,29 +31,64 @@ async def test_a_new_account_starts_empty(hass: HomeAssistant) -> None:
 async def test_a_damaged_file_loads_as_far_as_it_makes_sense(
     hass: HomeAssistant, hass_storage: dict[str, Any]
 ) -> None:
-    """Wrong shapes fall back to defaults instead of breaking setup."""
+    """Wrong shapes fall back to defaults instead of breaking setup or every check."""
+    whole = {
+        "status": 2,
+        "first_seen": "2026-11-15T10:00:00+00:00",
+        "delivered_at": None,
+        "event": "In transit||",
+        "description": "Coffee grinder",
+        "tracking_number": "1",
+        "carrier_code": "ups",
+    }
     seed(
         hass_storage,
         "odd",
         {
             "initialized": "yes",
-            "known": {"ups:1": {"status": 2}, "ups:2": "not a record"},
+            "known": {
+                "ups:1": whole,
+                "ups:2": "not a record",
+                "ups:3": {"status": 2},  # nothing to tell which package it is
+                "ups:4": {**whole, "status": [2]},
+                "ups:5": {**whole, "first_seen": "2026-02-30T10:00:00+00:00"},
+                "ups:6": {**whole, "tracking_number": 6},
+                "ups:7": {**whole, "delivered_at": "yesterday", "event": None},
+            },
             "icons": {"ups:1": "mdi:gift", "ups:2": 7},
-            "pending": ["not", "a", "dict"],
-            "deleted": None,
-            "reads": [1, "2026-11-16T10:00:00+00:00"],
-            "cache": "nope",
-            "rate_limited_until": 5,
+            "pending": {
+                "ups:8": {"tracking_number": 8, "carrier_code": "ups", "description": "x"},
+                "ups:9": {
+                    "tracking_number": "9",
+                    "carrier_code": "ups",
+                    "description": "x",
+                    "added_at": "2026-02-30T10:00:00+00:00",
+                },
+            },
+            "deleted": {"ups:10": "not a time", "ups:11": "2026-11-16T10:00:00+00:00"},
+            "unlisted": ["not", "a", "dict"],
+            "reads": [
+                1,
+                "2026-11-16T10:00:00+00:00",
+                "2026-11-16T10:00:00",
+                "2026-13-01T00:00:00+00:00",
+            ],
+            "cache": {"fetched_at": "2026-02-30T10:00:00+00:00", "deliveries": []},
+            "rate_limited_until": "2026-11-16 25:00:00+00:00",
             "left_over_from_an_older_version": True,
         },
     )
     storage = ParcelStorage(hass, "odd")
     await storage.async_load()
     assert not storage.initialized
-    assert list(storage.known) == ["ups:1"]
+    assert storage.known == {
+        "ups:1": whole,
+        "ups:7": {**whole, "delivered_at": None, "event": ""},
+    }
     assert storage.icons == {"ups:1": "mdi:gift"}
     assert storage.pending == {}
-    assert storage.deleted == {}
+    assert storage.deleted == {"ups:11": "2026-11-16T10:00:00+00:00"}
+    assert storage.unlisted == {}
     assert storage.data["reads"] == ["2026-11-16T10:00:00+00:00"]
     assert storage.data["adds"] == []
     assert storage.cached_response() is None

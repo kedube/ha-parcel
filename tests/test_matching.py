@@ -92,6 +92,9 @@ def test_pending_add_matches_by_number_then_by_name() -> None:
     assert match_pending(placeholder, deliveries, candidates) is None
     placeholder["description"] = "Test placeholder"
     assert match_pending(placeholder, deliveries, candidates) == "pholder:450000000000000000001"
+    # Only a placeholder is matched by name: any other namesake is another package.
+    namesake = {**typed, "tracking_number": "1Z999AA10000000001", "description": "Desk lamp"}
+    assert match_pending(namesake, deliveries, candidates) is None
     # A package that was already known is not a candidate.
     assert match_pending(typed, deliveries, []) is None
 
@@ -140,6 +143,12 @@ def test_a_delivered_placeholder_is_not_the_new_one() -> None:
 ORDER = "113-4567890-1234567"
 KETTLE = f"{ORDER}@Ab3Cd9EfG"
 MUGS = f"{ORDER}@Hj7Kl2MnP"
+
+
+def test_any_shipment_of_an_order_is_the_same_package_as_its_order_number() -> None:
+    assert same_package(f"amzlus:{KETTLE}", "amzlus", ORDER)
+    assert same_package(f"amzlus:{KETTLE}", "amzlus", "11345678901234567")
+    assert not same_package(f"amzlus:{KETTLE}", "amzluk", ORDER)
 
 
 def test_an_amazon_order_is_found_under_the_web_apps_own_number() -> None:

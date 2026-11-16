@@ -12,12 +12,14 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+from freezegun.api import FrozenDateTimeFactory
 from pytest_homeassistant_custom_component.common import MockConfigEntry, flush_store
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
+from .conftest import check_until_gone
 from .test_init import setup
 from custom_components.parcel.const import CONF_ACCOUNT_TOKEN, CONF_PACKAGE_ID_SECRET, DOMAIN
 from custom_components.parcel.entity import package_id
@@ -95,11 +97,11 @@ async def test_a_removed_sensor_leaves_no_tracking_number_in_the_registry(
     mock_parcel: SimpleNamespace,
     config_entry: MockConfigEntry,
     deliveries: list,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
     await setup(hass, config_entry)
     del deliveries[0]  # Parcel no longer lists the coffee grinder
-    await config_entry.runtime_data.async_refresh()
-    await hass.async_block_till_done()
+    await check_until_gone(hass, config_entry, freezer)
 
     registry = er.async_get(hass)
     assert registry.async_get("sensor.parcel_coffee_grinder") is None

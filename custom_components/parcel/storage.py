@@ -51,6 +51,7 @@ class StoredState(TypedDict):
     icons: dict[str, str]  # icons chosen by a person
     pending: dict[str, PendingRecord]
     deleted: dict[str, str]  # when each was deleted, so Parcel's cached list can't bring it back
+    unlisted: dict[str, str]  # when a remembered or deleted package went missing from Parcel's list
     reads: list[str]  # times of deliveries requests in the last hour
     adds: list[str]  # times of add requests in the last day
     cache: CacheRecord | None
@@ -64,6 +65,7 @@ def _empty() -> StoredState:
         "icons": {},
         "pending": {},
         "deleted": {},
+        "unlisted": {},
         "reads": [],
         "adds": [],
         "cache": None,
@@ -71,8 +73,68 @@ def _empty() -> StoredState:
     }
 
 
+def _stamp(value: Any) -> str | None:
+    """A time as the integration saves it (ISO 8601 with an offset), else None."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = dt_util.parse_datetime(value)
+    except ValueError:
+        return None  # well formed but impossible, like February 30
+    return value if parsed is not None and parsed.tzinfo is not None else None
+
+
+def _text(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _known_record(item: Any) -> KnownPackage | None:
+    """A remembered package with every field usable, else None (it is forgotten)."""
+    if not isinstance(item, dict):
+        return None
+    status = item.get("status")
+    first_seen = _stamp(item.get("first_seen"))
+    number = _text(item.get("tracking_number"))
+    carrier = _text(item.get("carrier_code"))
+    if type(status) is not int or not (first_seen and number and carrier):
+        return None
+    event = item.get("event")
+    description = item.get("description")
+    return {
+        "status": status,
+        "first_seen": first_seen,
+        "delivered_at": _stamp(item.get("delivered_at")),
+        "event": event if isinstance(event, str) else "",
+        "description": description if isinstance(description, str) else number,
+        "tracking_number": number,
+        "carrier_code": carrier,
+    }
+
+
+def _pending_record(item: Any) -> PendingRecord | None:
+    """A pending add with every field usable, else None (it is forgotten)."""
+    if not isinstance(item, dict):
+        return None
+    number = _text(item.get("tracking_number"))
+    carrier = _text(item.get("carrier_code"))
+    added_at = _stamp(item.get("added_at"))
+    description = item.get("description")
+    if not (number and carrier and added_at and isinstance(description, str)):
+        return None
+    return {
+        "tracking_number": number,
+        "carrier_code": carrier,
+        "description": description,
+        "added_at": added_at,
+    }
+
+
 def _coerce(stored: dict[str, Any]) -> StoredState:
-    """Defaults for anything missing, and for anything that isn't the expected shape."""
+    """Defaults for anything missing, and anything not as the integration writes it.
+
+    The file is only ever written by the integration, but one edited by hand or
+    damaged mustn't make every check fail: what can't be used is dropped.
+    """
 
     def records(name: str) -> dict[str, Any]:
         value = stored.get(name)
@@ -82,28 +144,36 @@ def _coerce(stored: dict[str, Any]) -> StoredState:
 
     def stamps(name: str) -> list[str]:
         value = stored.get(name)
-        return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+        if not isinstance(value, list):
+            return []
+        return [stamp for item in value if (stamp := _stamp(item))]
+
+    def times(name: str) -> dict[str, str]:
+        return {key: stamp for key, item in records(name).items() if (stamp := _stamp(item))}
 
     cache = stored.get("cache")
-    until = stored.get("rate_limited_until")
+    usable_cache = (
+        isinstance(cache, dict)
+        and _stamp(cache.get("fetched_at")) is not None
+        and isinstance(cache.get("deliveries"), list)
+    )
     return {
         "initialized": stored.get("initialized") is True,
         "known": {
-            key: cast(KnownPackage, item)
-            for key, item in records("known").items()
-            if isinstance(item, dict)
+            key: record for key, item in records("known").items() if (record := _known_record(item))
         },
         "icons": {key: item for key, item in records("icons").items() if isinstance(item, str)},
         "pending": {
-            key: cast(PendingRecord, item)
+            key: added
             for key, item in records("pending").items()
-            if isinstance(item, dict)
+            if (added := _pending_record(item))
         },
-        "deleted": {key: item for key, item in records("deleted").items() if isinstance(item, str)},
+        "deleted": times("deleted"),
+        "unlisted": times("unlisted"),
         "reads": stamps("reads"),
         "adds": stamps("adds"),
-        "cache": cast(CacheRecord, cache) if isinstance(cache, dict) else None,
-        "rate_limited_until": until if isinstance(until, str) else None,
+        "cache": cast(CacheRecord, cache) if usable_cache else None,
+        "rate_limited_until": _stamp(stored.get("rate_limited_until")),
     }
 
 
@@ -182,6 +252,11 @@ class ParcelStorage:
     def deleted(self) -> dict[str, str]:
         """Packages deleted from Home Assistant, with when."""
         return self.data["deleted"]
+
+    @property
+    def unlisted(self) -> dict[str, str]:
+        """When remembered or deleted packages went missing from Parcel's list."""
+        return self.data["unlisted"]
 
     @property
     def initialized(self) -> bool:

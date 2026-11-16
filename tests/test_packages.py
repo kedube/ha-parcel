@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from freezegun.api import FrozenDateTimeFactory
 import pytest
@@ -13,12 +13,13 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry, async_
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
-from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers import entity_registry as er, issue_registry as ir
 
-from .conftest import raw
+from .conftest import check_until_gone, raw
 from .test_init import setup
 from custom_components.parcel.api import ParcelConnectionError
-from custom_components.parcel.const import DOMAIN, EVENT_PACKAGE_UPDATE
+from custom_components.parcel.const import CONF_PACKAGE_ID_SECRET, DOMAIN, EVENT_PACKAGE_UPDATE
+from custom_components.parcel.entity import package_id
 from custom_components.parcel.sensor import ParcelSummarySensor
 from custom_components.parcel.summary import build_summary
 from custom_components.parcel.web_sign_in import expired_issue_id, expiring_issue_id
@@ -59,6 +60,7 @@ async def test_the_delete_marker_goes_once_parcel_stops_listing(
     mock_parcel: SimpleNamespace,
     config_entry: MockConfigEntry,
     deliveries: list,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
     """Added again in the Parcel app later, the package appears like any new one."""
     await setup(hass, config_entry)
@@ -66,9 +68,13 @@ async def test_the_delete_marker_goes_once_parcel_stops_listing(
     mock_parcel.web_list.side_effect = [[STORED_UPS], []]
     await coordinator.async_delete_package(UPS_KEY)
     assert UPS_KEY in coordinator.storage.deleted
+    mock_parcel.web_list.side_effect = None  # the sign-in check runs as time passes
 
     grinder = deliveries.pop(0)
+    # One reply without it isn't enough: Parcel's next one may list it again.
     await coordinator.async_refresh()
+    assert UPS_KEY in coordinator.storage.deleted
+    await check_until_gone(hass, config_entry, freezer)
     assert coordinator.storage.deleted == {}
 
     events = async_capture_events(hass, EVENT_PACKAGE_UPDATE)
@@ -283,9 +289,10 @@ async def test_an_amazon_order_is_deleted_under_the_web_apps_number(
     coordinator = config_entry.runtime_data
     stored = {"tracking_number": STORED_ORDER, "carrier_code": "amzlus", "label": "Kettle"}
     mock_parcel.web_list.side_effect = [[stored], []]
-    await coordinator.async_delete_package(f"amzlus:{ORDER}")
+    # Its key carries the shipment ID, as the web app's number does.
+    await coordinator.async_delete_package(f"amzlus:{STORED_ORDER}")
     mock_parcel.web_delete.assert_awaited_once_with(STORED_ORDER, "amzlus")
-    assert f"amzlus:{ORDER}" not in coordinator.data.deliveries
+    assert f"amzlus:{STORED_ORDER}" not in coordinator.data.deliveries
 
 
 async def test_a_number_parcel_lists_ambiguously_is_neither_deleted_nor_hidden(
@@ -308,6 +315,135 @@ async def test_a_number_parcel_lists_ambiguously_is_neither_deleted_nor_hidden(
     assert raised.value.translation_key == "delete_ambiguous"
     mock_parcel.web_delete.assert_not_awaited()
     assert f"amzlus:{ORDER}" in coordinator.data.deliveries
+
+
+async def test_a_check_landing_mid_delete_does_not_bring_the_package_back(
+    hass: HomeAssistant, mock_parcel: SimpleNamespace, config_entry: MockConfigEntry
+) -> None:
+    """A scheduled check that finishes while Parcel's web app answers replaces the data."""
+    await setup(hass, config_entry)
+    coordinator = config_entry.runtime_data
+    stored = {"tracking_number": UPS, "carrier_code": "ups", "label": "Coffee grinder"}
+    mock_parcel.web_list.side_effect = [[stored], []]
+
+    async def check_lands_meanwhile(*_args: object) -> None:
+        await coordinator.async_refresh()
+
+    mock_parcel.web_delete.side_effect = check_lands_meanwhile
+    await coordinator.async_delete_package(UPS_KEY)
+    await hass.async_block_till_done()
+    assert UPS_KEY not in coordinator.data.deliveries
+    assert hass.states.get("sensor.parcel_coffee_grinder") is None
+
+
+def shipment(name: str, shipment_id: str, status: int = 2) -> dict:
+    """One shipment of the order, as Parcel's API lists it."""
+    return raw(
+        ORDER,
+        "amzlus",
+        name,
+        status,
+        extra_information=shipment_id,
+        events=[{"event": "Shipped", "date": "2026-11-15 08:00:00"}],
+    )
+
+
+async def test_each_shipment_of_an_amazon_order_is_tracked(
+    hass: HomeAssistant,
+    mock_parcel: SimpleNamespace,
+    config_entry: MockConfigEntry,
+    deliveries: list,
+) -> None:
+    """Two parts of one order share its number; they once collapsed into one."""
+    deliveries[:] = [shipment("Kettle", "Ab3Cd9EfG"), shipment("Mugs", "Hj7Kl2MnP", 4)]
+    await setup(hass, config_entry)
+    assert set(config_entry.runtime_data.data.deliveries) == {
+        f"amzlus:{ORDER}@Ab3Cd9EfG",
+        f"amzlus:{ORDER}@Hj7Kl2MnP",
+    }
+    assert hass.states.get("sensor.parcel_kettle").state == "in_transit"
+    assert hass.states.get("sensor.parcel_mugs").state == "out_for_delivery"
+    assert hass.states.get("sensor.parcel_on_the_way").state == "2"
+
+
+async def test_the_delete_action_needs_to_know_which_shipment(
+    hass: HomeAssistant,
+    mock_parcel: SimpleNamespace,
+    config_entry: MockConfigEntry,
+    deliveries: list,
+) -> None:
+    deliveries[:] = [shipment("Kettle", "Ab3Cd9EfG"), shipment("Mugs", "Hj7Kl2MnP")]
+    await setup(hass, config_entry)
+    with pytest.raises(ServiceValidationError) as raised:
+        await hass.services.async_call(
+            DOMAIN, "delete_package", {"tracking_number": ORDER}, blocking=True
+        )
+    assert raised.value.translation_key == "choose_shipment"
+    mugs = f"{ORDER}@Hj7Kl2MnP"
+    stored = {"tracking_number": mugs, "carrier_code": "amzlus", "label": "Mugs"}
+    mock_parcel.web_list.side_effect = [[stored], []]
+    await hass.services.async_call(
+        DOMAIN, "delete_package", {"tracking_number": mugs}, blocking=True
+    )
+    mock_parcel.web_delete.assert_awaited_once_with(mugs, "amzlus")
+
+
+async def test_upgrading_keeps_an_amazon_shipment_as_it_was(
+    hass: HomeAssistant,
+    hass_storage: dict,
+    mock_parcel: SimpleNamespace,
+    deliveries: list,
+) -> None:
+    """Saved under "amzlus:<order number>" by an older version: no removed/added events,
+    the icon chosen for it stays, and so does its sensor's entity ID."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Parcel",
+        data={"api_key": "test-key", CONF_PACKAGE_ID_SECRET: "a" * 32},
+        options={"scan_interval": 5, "package_sensors": True},
+        minor_version=2,
+    )
+    old_key = f"amzlus:{ORDER}"
+    hass_storage[f"parcel.{entry.entry_id}"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": f"parcel.{entry.entry_id}",
+        "data": {
+            "initialized": True,
+            "known": {
+                old_key: {
+                    "status": 2,
+                    "first_seen": "2026-11-14T12:00:00+00:00",
+                    "delivered_at": None,
+                    "event": "Shipped|2026-11-15 08:00:00|",
+                    "description": "Kettle",
+                    "tracking_number": ORDER,
+                    "carrier_code": "amzlus",
+                }
+            },
+            "icons": {old_key: "mdi:kettle"},
+        },
+    }
+    entry.add_to_hass(hass)
+    er.async_get(hass).async_get_or_create(
+        "sensor",
+        DOMAIN,
+        f"{entry.entry_id}_package_{package_id(entry, old_key)}",
+        config_entry=entry,
+        suggested_object_id="parcel_kettle",
+    )
+    deliveries[:] = [shipment("Kettle", "Ab3Cd9EfG")]
+    events = async_capture_events(hass, EVENT_PACKAGE_UPDATE)
+    with patch("custom_components.parcel.async_register_panel", new_callable=AsyncMock):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = entry.runtime_data
+    new_key = f"amzlus:{ORDER}@Ab3Cd9EfG"
+    assert events == []
+    assert coordinator.storage.known[new_key]["first_seen"] == "2026-11-14T12:00:00+00:00"
+    assert coordinator.icon_for(new_key, "Kettle") == "mdi:kettle"
+    assert hass.states.get("sensor.parcel_kettle").state == "in_transit"
+    assert hass.states.get("sensor.parcel_kettle_2") is None
 
 
 async def test_deleting_an_add_never_takes_an_older_namesake(
@@ -360,11 +496,28 @@ async def test_one_odd_package_does_not_take_the_others_down(
 # Icons -----------------------------------------------------------------------
 
 
+async def test_one_impossible_carrier_date_does_not_drop_the_package(
+    hass: HomeAssistant,
+    mock_parcel: SimpleNamespace,
+    config_entry: MockConfigEntry,
+    deliveries: list,
+) -> None:
+    """It used to vanish, with a "removed" event, until the carrier corrected the date."""
+    await setup(hass, config_entry)
+    events = async_capture_events(hass, EVENT_PACKAGE_UPDATE)
+    deliveries[0]["events"].insert(0, {"event": "Arrived", "date": "2026-02-30 10:00:00"})
+    await config_entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert UPS_KEY in config_entry.runtime_data.data.deliveries
+    assert [event.data["type"] for event in events] == ["update"]
+
+
 async def test_an_icon_choice_goes_when_its_package_does(
     hass: HomeAssistant,
     mock_parcel: SimpleNamespace,
     config_entry: MockConfigEntry,
     deliveries: list,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
     await setup(hass, config_entry)
     coordinator = config_entry.runtime_data
@@ -375,6 +528,8 @@ async def test_an_icon_choice_goes_when_its_package_does(
 
     deliveries.pop(0)
     await coordinator.async_refresh()
+    assert coordinator.storage.icons == {UPS_KEY: "mdi:gift"}  # not gone yet
+    await check_until_gone(hass, config_entry, freezer)
     assert coordinator.storage.icons == {}
 
 

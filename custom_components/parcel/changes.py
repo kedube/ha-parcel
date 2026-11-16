@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -126,11 +126,13 @@ def detect_changes(
     now: datetime,
     *,
     announce: bool,
+    keep: Collection[str] = (),
 ) -> list[Change]:
     """Compare Parcel's list with what was known, and bring `known` up to date.
 
     Nothing is announced on the very first check (announce=False), when every
-    package would otherwise count as new.
+    package would otherwise count as new. Packages in keep are missing from this
+    reply but not yet taken as gone, so they are neither removed nor announced.
     """
     changes: list[Change] = []
     for key, delivery in deliveries.items():
@@ -160,6 +162,6 @@ def detect_changes(
             changes.append(Change(EVENT_UPDATE, delivery, old_status))
         previous["status"] = delivery.status_code
         previous["event"] = signature
-    for key in [key for key in known if key not in deliveries]:
+    for key in [key for key in known if key not in deliveries and key not in keep]:
         changes.append(removal(key, known.pop(key), REASON_NOT_LISTED))
     return changes if announce else []
