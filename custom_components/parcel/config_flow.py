@@ -2,23 +2,23 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 import logging
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import aiohttp
 import probatio as vol
 
 from homeassistant.config_entries import (
     ConfigEntry,
+    ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
     OptionsFlowWithReload,
 )
 from homeassistant.const import CONF_API_KEY
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.aiohttp_client import async_create_clientsession, async_get_clientsession
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     BooleanSelector,
     NumberSelector,
@@ -54,7 +54,11 @@ from .const import (
     PARCEL_WEB_URL,
     WEB_SIGN_IN_DOCS_URL,
 )
-from .web_sign_in import async_clear_issues
+from .matching import lists_any
+from .web_sign_in import async_clear_issues, web_session
+
+if TYPE_CHECKING:
+    from .coordinator import ParcelCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -83,18 +87,19 @@ async def _check_api_key(hass: HomeAssistant, api_key: str) -> str | None:
     return None
 
 
-async def _check_account_token(hass: HomeAssistant, token: str) -> str | None:
-    """Return an error code, or None when Parcel's web app accepts the token."""
+async def _check_account_token(
+    hass: HomeAssistant, token: str, expected: Collection[str] = ()
+) -> str | None:
+    """Return an error code, or None when Parcel's web app accepts the token.
+
+    expected holds the normalized numbers of the account's packages on their way, when
+    they're known; a sign-in whose list has none of them is another account's.
+    """
     if not TOKEN_FORMAT.fullmatch(token) or TOKEN_FORBIDDEN & set(token):
         # Not something a browser would hold in a cookie, so don't send it anywhere.
         return "invalid_account_token"
-    # auto_cleanup=False so this short-lived session is ours to close here, instead
-    # of being tied to Home Assistant's shutdown.
-    session = async_create_clientsession(
-        hass, auto_cleanup=False, cookie_jar=aiohttp.DummyCookieJar()
-    )
     try:
-        await ParcelWebClient(session, token).async_validate()
+        items = await ParcelWebClient(web_session(hass), token).async_list_deliveries()
     except ParcelWebAuthError:
         return "invalid_account_token"
     except ParcelRateLimitError:
@@ -104,8 +109,8 @@ async def _check_account_token(hass: HomeAssistant, token: str) -> str | None:
     except ParcelError:
         _LOGGER.exception("Unexpected response from Parcel while checking the web sign-in")
         return "unknown"
-    finally:
-        await session.close()
+    if expected and not lists_any(items, expected):
+        return "account_token_other_account"
     return None
 
 
@@ -170,6 +175,13 @@ class ParcelConfigFlow(ConfigFlow, domain=DOMAIN):
 class ParcelOptionsFlow(OptionsFlowWithReload):
     """Change how Parcel behaves. Saving a change reloads the account."""
 
+    def _active_numbers(self) -> set[str]:
+        """The account's packages on their way, while it's running (empty otherwise)."""
+        if self.config_entry.state is not ConfigEntryState.LOADED:
+            return set()
+        coordinator: ParcelCoordinator = self.config_entry.runtime_data
+        return coordinator.active_numbers()
+
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """One page of options."""
         errors: dict[str, str] = {}
@@ -182,7 +194,7 @@ class ParcelOptionsFlow(OptionsFlowWithReload):
             token = saved
             set_at = current.get(CONF_ACCOUNT_TOKEN_SET_AT)
             if pasted and pasted != saved:
-                if error := await _check_account_token(self.hass, pasted):
+                if error := await _check_account_token(self.hass, pasted, self._active_numbers()):
                     errors[CONF_ACCOUNT_TOKEN] = error
                 # A fresh token restarts the countdown to its expiry.
                 token, set_at = pasted, dt_util.utcnow().isoformat()

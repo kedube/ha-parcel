@@ -126,12 +126,7 @@ def test_every_form_field_and_error_is_labelled() -> None:
     assert set(options["data_description"]) == fields
     source = (COMPONENT / "config_flow.py").read_text(encoding="utf-8")
     errors = set(re.findall(r'return "(\w+)"', source))
-    assert errors == {
-        "invalid_auth",
-        "rate_limited",
-        "cannot_connect",
-        "unknown",
-        "invalid_account_token",
-    }
-    assert errors - {"invalid_account_token"} <= set(strings["config"]["error"])
+    sign_in_only = {"invalid_account_token", "account_token_other_account"}
+    assert errors == {"invalid_auth", "rate_limited", "cannot_connect", "unknown", *sign_in_only}
+    assert errors - sign_in_only <= set(strings["config"]["error"])
     assert errors - {"invalid_auth"} <= set(strings["options"]["error"])

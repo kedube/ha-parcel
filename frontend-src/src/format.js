@@ -44,6 +44,15 @@ export function makeFormat(hass) {
   };
   // Date-only values ('YYYY-MM-DD') are formatted at noon UTC so no zone can shift the day.
   const dayDate = (ymd) => new Date(`${ymd}T12:00:00Z`);
+  // The AM/PM part at the end of a time, when the clock has one ("4 PM" → " PM").
+  const dayPeriod = (text) => (text.match(/\s?[^\d\s:.]+$/) || [''])[0];
+  // Two times joined, with an AM/PM they share said only once: "1–4 PM", not "1 PM–4 PM".
+  const timePair = (start, end, join) => {
+    const a = api.time(start);
+    const b = api.time(end);
+    const period = dayPeriod(a);
+    return period && period === dayPeriod(b) ? join(a.slice(0, -period.length), b) : join(a, b);
+  };
 
   const api = {
     /** Local calendar day of a moment, as 'YYYY-MM-DD'. */
@@ -67,22 +76,9 @@ export function makeFormat(hass) {
       return formatter('time', { hour: 'numeric', minute: '2-digit', hour12 }).format(date);
     },
     /** "1–4 PM", "11 AM–2 PM" or "13:00–16:00". */
-    window(start, end) {
-      const a = api.time(start);
-      const b = api.time(end);
-      const suffix = (s) => (s.match(/\s?[^\d\s:.]+$/) || [''])[0];
-      const sa = suffix(a);
-      if (sa && sa === suffix(b)) return `${a.slice(0, -sa.length)}–${b}`;
-      return `${a}–${b}`;
-    },
-    between(start, end) {
-      const a = api.time(start);
-      const b = api.time(end);
-      const suffix = (s) => (s.match(/\s?[^\d\s:.]+$/) || [''])[0];
-      const sa = suffix(a);
-      if (sa && sa === suffix(b)) return `between ${a.slice(0, -sa.length)} and ${b}`;
-      return `between ${a} and ${b}`;
-    },
+    window: (start, end) => timePair(start, end, (a, b) => `${a}–${b}`),
+    /** "between 1 and 4 PM". */
+    between: (start, end) => timePair(start, end, (a, b) => `between ${a} and ${b}`),
     weekday: (ymd, style = 'long') => formatter(`wd-${style}`, { weekday: style }, 'UTC').format(dayDate(ymd)),
     monthDay: (ymd) => formatter('md', { month: 'short', day: 'numeric' }, 'UTC').format(dayDate(ymd)),
     longDate: (ymd) => formatter('ld', { weekday: 'long', month: 'long', day: 'numeric' }, 'UTC').format(dayDate(ymd)),

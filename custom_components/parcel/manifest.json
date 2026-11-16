@@ -1,6 +1,7 @@
 {
   "domain": "parcel",
   "name": "Parcel",
+  "categories": ["productivity_information.shopping_groceries"],
   "codeowners": ["@kedube"],
   "config_flow": true,
   "dependencies": ["frontend", "http", "panel_custom", "websocket_api"],

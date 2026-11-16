@@ -202,14 +202,14 @@ async def test_deleting_a_placeholder_before_parcel_lists_it(
         tracking_number="HATEST1", carrier_code="pholder", description="Birthday gift"
     )
     stored = {
-        "tracking_number": "450436033378735815683",
+        "tracking_number": "450000000000000000001",
         "carrier_code": "pholder",
         "label": "Birthday gift",
         "date_added": "2026-11-16 10:00:00",
     }
     mock_parcel.web_list.side_effect = [[stored], []]
     await coordinator.async_delete_package("pholder:HATEST1")
-    mock_parcel.web_delete.assert_awaited_once_with("450436033378735815683", "pholder")
+    mock_parcel.web_delete.assert_awaited_once_with("450000000000000000001", "pholder")
     assert coordinator.data.pending == {}
 
 
@@ -219,8 +219,12 @@ async def test_a_new_add_is_not_confused_with_a_listed_namesake(
     config_entry: MockConfigEntry,
     deliveries: list,
 ) -> None:
-    """Deleting a just-added placeholder never takes an older package of the same name."""
-    deliveries.append(raw("450436033378735815683", "pholder", "Birthday gift", 1))
+    """Deleting a just-added placeholder never takes an older package of the same name.
+
+    Until Parcel has stored the new one, there is nothing to delete, and it says so
+    instead of hiding a package that is about to show up in Parcel.
+    """
+    deliveries.append(raw("450000000000000000001", "pholder", "Birthday gift", 1))
     await setup(hass, config_entry)
     coordinator = config_entry.runtime_data
     await coordinator.async_add_package(
@@ -229,15 +233,85 @@ async def test_a_new_add_is_not_confused_with_a_listed_namesake(
     mock_parcel.web_list.side_effect = None
     mock_parcel.web_list.return_value = [
         {
-            "tracking_number": "450436033378735815683",
+            "tracking_number": "450000000000000000001",
             "carrier_code": "pholder",
             "label": "Birthday gift",
-        }
+        },
+        {"tracking_number": "1Z999AA10123456784", "carrier_code": "ups", "label": "Grinder"},
     ]
-    await coordinator.async_delete_package("pholder:HATEST2")
+    with pytest.raises(HomeAssistantError) as raised:
+        await coordinator.async_delete_package("pholder:HATEST2")
+    assert raised.value.translation_key == "delete_not_added_yet"
     mock_parcel.web_delete.assert_not_awaited()
-    assert "pholder:450436033378735815683" in coordinator.data.deliveries
-    assert coordinator.data.pending == {}
+    assert "pholder:450000000000000000001" in coordinator.data.deliveries
+    assert "pholder:HATEST2" in coordinator.data.pending
+
+
+async def test_a_sign_in_for_another_account_deletes_nothing(
+    hass: HomeAssistant, mock_parcel: SimpleNamespace, config_entry: MockConfigEntry
+) -> None:
+    """Its list doesn't have the package, but that doesn't mean it was deleted."""
+    await setup(hass, config_entry)
+    coordinator = config_entry.runtime_data
+    mock_parcel.web_list.side_effect = None
+    mock_parcel.web_list.return_value = [
+        {"tracking_number": "9400111202555842332669", "carrier_code": "usps", "label": "Socks"}
+    ]
+    events = async_capture_events(hass, EVENT_PACKAGE_UPDATE)
+    with pytest.raises(HomeAssistantError) as raised:
+        await coordinator.async_delete_package("ups:1Z999AA10123456784")
+    await hass.async_block_till_done()
+    assert raised.value.translation_key == "web_sign_in_other_account"
+    mock_parcel.web_delete.assert_not_awaited()
+    assert "ups:1Z999AA10123456784" in coordinator.data.deliveries
+    assert events == []
+
+
+async def test_deleting_an_add_never_takes_an_older_namesake(
+    hass: HomeAssistant, mock_parcel: SimpleNamespace, config_entry: MockConfigEntry
+) -> None:
+    """Only placeholders are looked up by name: last year's "Running shoes" is left alone."""
+    await setup(hass, config_entry)
+    coordinator = config_entry.runtime_data
+    await coordinator.async_add_package(
+        tracking_number="1Z999AA10000000001", carrier_code="ups", description="Running shoes"
+    )
+    mock_parcel.web_list.side_effect = None
+    mock_parcel.web_list.return_value = [
+        {"tracking_number": "1Z999AA10123456784", "carrier_code": "ups", "label": "Grinder"},
+        {
+            "tracking_number": "1Z999AA19999999999",
+            "carrier_code": "ups",
+            "label": "Running shoes",
+            "date_added": "2025-03-01 09:00:00",
+        },
+    ]
+    with pytest.raises(HomeAssistantError) as raised:
+        await coordinator.async_delete_package("ups:1Z999AA10000000001")
+    assert raised.value.translation_key == "delete_not_added_yet"
+    mock_parcel.web_delete.assert_not_awaited()
+    assert "ups:1Z999AA10000000001" in coordinator.data.pending
+
+
+async def test_one_odd_package_does_not_take_the_others_down(
+    hass: HomeAssistant,
+    mock_parcel: SimpleNamespace,
+    config_entry: MockConfigEntry,
+    deliveries: list,
+) -> None:
+    """Placeholder dates, impossible values and missing fields cost only that package."""
+    await hass.config.async_set_time_zone("Europe/Berlin")
+    deliveries += [
+        raw("9400111202555842332669", "usps", "Running shoes", 2, timestamp_expected=253402300799),
+        raw("9400111202555842332670", "usps", "Rain boots", float("inf")),
+        raw("9400111202555842332671", "usps", "Hat", 2, date_expected="0001-01-01T00:00:00+05:00"),
+        {"carrier_code": "usps", "description": "No number"},
+    ]
+    await setup(hass, config_entry)
+    assert config_entry.runtime_data.last_update_success
+    assert hass.states.get("sensor.parcel_on_the_way").state == "5"
+    assert hass.states.get("sensor.parcel_running_shoes").state == "in_transit"
+    assert hass.states.get("sensor.parcel_rain_boots").state == "not_found"
 
 
 # Icons -----------------------------------------------------------------------
@@ -372,7 +446,7 @@ async def test_next_delivery_separates_the_day_from_the_time(
     # Only the dog food has an estimate, and it is a day without a time.
     day = hass.states.get("sensor.parcel_next_delivery_day")
     assert day.state == "2026-11-16"
-    assert day.attributes["package"] == "Purina Pro Plan Small Breed"
+    assert day.attributes["package"] == "Dog food"
     assert day.attributes["count"] == 1
     when = hass.states.get("sensor.parcel_next_delivery")
     assert when.state == "unknown"

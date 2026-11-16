@@ -59,7 +59,7 @@ async def test_the_morning_briefing_reads_naturally(
 
     assert hass.states.get("sensor.parcel_arriving_today").state == "2"
     assert Template(message, hass).async_render(variables) == (
-        "2 packages arrive today: Purina Pro Plan Small Breed and Coffee grinder"
+        "2 packages arrive today: Dog food and Coffee grinder"
     )
 
     deliveries.pop()

@@ -151,4 +151,3 @@ export const ICON_LABELS = {
 };
 
 export const itemIconPath = (name) => ITEM_ICONS[name] || mdiPackageVariantClosed;
-export const ITEM_ICON_NAMES = Object.keys(ITEM_ICONS);

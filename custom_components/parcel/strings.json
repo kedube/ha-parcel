@@ -53,7 +53,8 @@
       "invalid_account_token": "Parcel didn't accept this sign-in. Sign in again at web.parcelapp.net and copy the new account_token.",
       "cannot_connect": "Couldn't reach Parcel. Check the internet connection and try again.",
       "rate_limited": "Parcel asked Home Assistant to slow down. Try again in a few minutes.",
-      "unknown": "Something unexpected happened. The logs have details."
+      "unknown": "Something unexpected happened. The logs have details.",
+      "account_token_other_account": "This sign-in is for a different Parcel account: none of this account's packages on their way are in it. Sign in at web.parcelapp.net with the account this API key belongs to, and copy its account_token."
     }
   },
   "entity": {
@@ -268,6 +269,12 @@
     },
     "choose_carrier": {
       "message": "More than one package has this tracking number. Add the carrier code."
+    },
+    "web_sign_in_other_account": {
+      "message": "Nothing was deleted. The saved web sign-in doesn't list this account's packages, so it may be for a different Parcel account. Paste the right one in the integration's options."
+    },
+    "delete_not_added_yet": {
+      "message": "Parcel hasn't finished adding this package yet, so there's nothing to delete. Try again in a minute."
     }
   },
   "issues": {

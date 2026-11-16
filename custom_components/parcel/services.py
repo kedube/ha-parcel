@@ -13,36 +13,41 @@ from homeassistant.core import (
 )
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.service import verify_domain_control
 
 from .accounts import coordinators_for, one_coordinator
-from .const import DOMAIN
+from .const import DOMAIN, MAX_NAME_LENGTH, MAX_NUMBER_LENGTH
 
 SERVICE_ADD = "add_package"
 SERVICE_DELETE = "delete_package"
 SERVICE_REFRESH = "refresh"
 ATTR_ENTRY = "config_entry_id"
 
+NUMBER = vol.All(cv.string, vol.Length(max=MAX_NUMBER_LENGTH))
+TEXT = vol.All(cv.string, vol.Length(max=MAX_NAME_LENGTH))
+
 ADD_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_ENTRY): cv.string,
-        vol.Required("tracking_number"): cv.string,
-        vol.Required("description"): cv.string,
+        vol.Required("tracking_number"): NUMBER,
+        vol.Required("description"): TEXT,
         vol.Optional("carrier"): cv.string,
-        vol.Optional("postcode"): cv.string,
-        vol.Optional("email"): cv.string,
+        vol.Optional("postcode"): TEXT,
+        vol.Optional("email"): TEXT,
         vol.Optional("send_push_confirmation", default=False): cv.boolean,
     }
 )
 DELETE_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_ENTRY): cv.string,
-        vol.Required("tracking_number"): cv.string,
+        vol.Required("tracking_number"): NUMBER,
         vol.Optional("carrier"): cv.string,
     }
 )
 REFRESH_SCHEMA = vol.Schema({vol.Optional(ATTR_ENTRY): cv.string})
 
 
+@verify_domain_control(DOMAIN)
 async def _async_add(call: ServiceCall) -> ServiceResponse:
     coordinator = one_coordinator(call.hass, call.data.get(ATTR_ENTRY))
     result = await coordinator.async_add_package(
@@ -56,6 +61,7 @@ async def _async_add(call: ServiceCall) -> ServiceResponse:
     return result if call.return_response else None
 
 
+@verify_domain_control(DOMAIN)
 async def _async_delete(call: ServiceCall) -> None:
     coordinator = one_coordinator(call.hass, call.data.get(ATTR_ENTRY))
     carrier = (call.data.get("carrier") or "").strip().lower() or None
@@ -67,6 +73,7 @@ async def _async_delete(call: ServiceCall) -> None:
     await coordinator.async_delete_package(keys[0])
 
 
+@verify_domain_control(DOMAIN)
 async def _async_refresh(call: ServiceCall) -> None:
     coordinators = coordinators_for(call.hass, call.data.get(ATTR_ENTRY))
     if not coordinators:

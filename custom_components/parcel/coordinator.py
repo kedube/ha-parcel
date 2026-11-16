@@ -45,9 +45,10 @@ from .const import (
     OUTAGE_GRACE,
     OUTAGE_GRACE_CHECKS,
     RATE_LIMIT_BACKOFF,
+    RATE_LIMIT_MAX_PAUSE,
     READS_PER_HOUR,
 )
-from .matching import find_stored, match_pending, same_package
+from .matching import find_stored, lists_any, match_pending, same_package
 from .models import (
     NOT_FOUND,
     STATUS_SLUGS,
@@ -259,8 +260,10 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
             _LOGGER.info("Getting updates from Parcel again")
             self._trouble = None
         self.storage.set_rate_limited_until(None)
-        self.storage.remember_response(raw, now)
         snapshot = self._process(raw, now)
+        # Kept only once it has been read without trouble, so a restart never starts
+        # from a response that can't be.
+        self.storage.remember_response(raw, now)
         self.storage.async_schedule_save()
         return snapshot
 
@@ -273,8 +276,9 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         return now - data.fetched_at < grace
 
     def _pause_requests(self, retry_after: float | None) -> timedelta:
-        """Parcel said "too many requests": make none for a while."""
-        wait = max(RATE_LIMIT_BACKOFF, timedelta(seconds=retry_after or 0))
+        """Parcel said "too many requests": make none for a while (within reason)."""
+        asked = timedelta(seconds=min(retry_after or 0, RATE_LIMIT_MAX_PAUSE.total_seconds()))
+        wait = max(RATE_LIMIT_BACKOFF, asked)
         _LOGGER.warning(
             "Parcel's rate limit was reached; pausing checks for %s minutes",
             int(wait.total_seconds() // 60),
@@ -342,8 +346,9 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         for listing in raw:
             try:
                 delivery = Delivery.from_api(listing, tz)
-            except (KeyError, TypeError, ValueError) as err:
-                _LOGGER.debug("Skipping a delivery in an unexpected format: %s", err)
+            except (KeyError, TypeError, ValueError, OverflowError) as err:
+                # One odd package mustn't take the rest down with it.
+                _LOGGER.debug("Skipping a delivery in an unexpected format: %r", err)
                 continue
             listed.add(delivery.key)
             if delivery.key not in deleted:
@@ -417,6 +422,15 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
             return True
         when = self.delivered_at(delivery)
         return when is None or dt_util.utcnow() - when < DELIVERED_SENSOR_RETENTION
+
+    def active_numbers(self, *, besides: str | None = None) -> set[str]:
+        """Normalized numbers of the listed packages still on their way (optionally but one)."""
+        snapshot = self.data or ParcelSnapshot()
+        return {
+            normalize_number(delivery.tracking_number)
+            for key, delivery in snapshot.deliveries.items()
+            if delivery.is_active and key != besides
+        }
 
     def find_keys(self, tracking_number: str, carrier_code: str | None = None) -> list[str]:
         """Keys of tracked packages (listed, or just added) with this tracking number.
@@ -681,11 +695,11 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         try:
             # Delete exactly what Parcel stored, then confirm it's gone: Parcel reports
             # success even when nothing matched (like the web app, re-read the list).
-            # A package Parcel already lists is found by its number alone; if that's no
-            # longer in the web list, it has been deleted already and nothing is sent.
-            # Only an add Parcel hasn't listed yet may be found by its name instead.
+            # A package is found by its number; only a placeholder Parcel hasn't listed
+            # yet may be found by its name, because Parcel numbers placeholders itself.
+            items = await web.async_list_deliveries()
             stored = find_stored(
-                await web.async_list_deliveries(),
+                items,
                 number,
                 carrier,
                 unlisted_name=name if delivery is None else None,
@@ -693,7 +707,9 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
                     normalize_number(item.tracking_number) for item in snapshot.deliveries.values()
                 },
             )
-            if stored is not None:
+            if stored is None:
+                self._check_not_found(items, key, listed=delivery is not None)
+            else:
                 await web.async_delete_delivery(stored[0], stored[1])
                 if find_stored(await web.async_list_deliveries(), stored[0], stored[1]):
                     raise HomeAssistantError(
@@ -727,6 +743,25 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         self.storage.async_schedule_save()
         self.async_update_listeners()
         self._emit(self._event_data(removal(key, record, REASON_DELETED)))
+
+    def _check_not_found(self, items: list[dict[str, Any]], key: str, *, listed: bool) -> None:
+        """A package missing from the web app's list: say why, unless it was deleted elsewhere.
+
+        Only a package Parcel's API still lists can have been deleted elsewhere a moment
+        ago, and only this account's own list can show that. Anything else is refused,
+        so nothing is hidden here that is still in Parcel.
+        """
+        others = self.active_numbers(besides=key)
+        if others and not lists_any(items, others):
+            # None of the account's other packages on their way are in it either.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="web_sign_in_other_account"
+            )
+        if not listed:
+            # Added from Home Assistant, and Parcel hasn't stored it yet.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="delete_not_added_yet"
+            )
 
     @callback
     def async_set_icon(self, key: str, icon: str | None) -> None:

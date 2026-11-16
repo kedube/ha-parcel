@@ -246,6 +246,18 @@ class ParcelPackageSensor(ParcelEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_options = STATUS_OPTIONS
     _attr_translation_key = "package"
+    # These change with every scan of the package; history only needs the status.
+    _unrecorded_attributes = frozenset(
+        {
+            "tracking_number",
+            "expected",
+            "expected_end",
+            "last_update",
+            "last_update_at",
+            "last_location",
+            "delivered_at",
+        }
+    )
 
     def __init__(self, coordinator: ParcelCoordinator, key: str) -> None:
         """Track one package by its carrier and tracking number."""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 from typing import Any
 
 import aiohttp
@@ -56,18 +57,20 @@ class ParcelWebAuthError(ParcelError):
 
 
 def _retry_after(response: aiohttp.ClientResponse) -> float | None:
+    """Seconds Parcel asked us to wait, when it said so in a usable way."""
     value = response.headers.get("Retry-After")
     try:
-        return float(value) if value else None
+        seconds = float(value) if value else None
     except ValueError:
         return None
+    return seconds if seconds is not None and math.isfinite(seconds) and seconds >= 0 else None
 
 
 async def _read_json(response: aiohttp.ClientResponse) -> Any:
-    text = await response.text()
     try:
-        return json.loads(text)
-    except ValueError as err:
+        return json.loads(await response.text())
+    except (ValueError, RecursionError) as err:
+        # Not JSON, not text in its stated encoding, or nested too deeply to read.
         raise ParcelError(f"Parcel sent an unexpected response (HTTP {response.status})") from err
 
 
@@ -90,10 +93,14 @@ class ParcelClient:
         headers = {"api-key": self._api_key, "User-Agent": USER_AGENT, "Accept": "application/json"}
         try:
             async with asyncio.timeout(REQUEST_TIMEOUT):
+                # No redirects: aiohttp drops only its standard credential headers when
+                # one leads elsewhere, so the api-key header would go along with it.
                 async with self._session.request(
-                    method, url, headers=headers, params=params, json=payload
+                    method, url, headers=headers, params=params, json=payload, allow_redirects=False
                 ) as response:
                     status = response.status
+                    if 300 <= status < 400:
+                        raise ParcelError(f"Parcel sent an unexpected redirect (HTTP {status})")
                     if status == 429:
                         raise ParcelRateLimitError(
                             "Parcel's rate limit was reached", _retry_after(response)

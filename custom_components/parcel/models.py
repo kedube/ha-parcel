@@ -49,20 +49,22 @@ CARRIER_PATTERNS: tuple[tuple[str, str], ...] = (
 _CARRIER_RES = tuple((re.compile(p), code) for p, code in CARRIER_PATTERNS)
 
 # An icon for each package, guessed from words in its name. People can pick another.
-# Patterns are case-insensitive and work in both Python and JavaScript.
+# Patterns are case-insensitive and work in both Python and JavaScript. The first
+# match wins, so narrower words come before the broader ones they contain
+# ("headphone" before "phone", "macbook" before "book").
 DEFAULT_ICON = "mdi:package-variant-closed"
 ICON_RULES: tuple[tuple[str, str], ...] = (
     (r"coffee|espresso|grinder|kettle|\bmug", "mdi:coffee"),
     (r"\btea\b", "mdi:tea"),
     (r"shoe|sneaker|boot|sandal|slipper", "mdi:shoe-sneaker"),
-    (r"lamp|bulb|light", "mdi:desk-lamp"),
+    (r"headphone|earbud|airpod|speaker", "mdi:headphones"),
+    (r"laptop|computer|keyboard|mouse|monitor|macbook|chromebook|tablet|ipad", "mdi:laptop"),
+    (r"phone|charger|cable|airtag", "mdi:cellphone"),
+    (r"lamp|bulb|lantern|flashlight|\blights?\b", "mdi:desk-lamp"),
     (r"extension cord|power strip|outlet|surge|\bplug", "mdi:power-plug-outline"),
     (r"book|guide|novel|magazine|journal", "mdi:book-open-page-variant"),
-    (r"laptop|computer|keyboard|mouse|monitor|macbook|tablet|ipad", "mdi:laptop"),
-    (r"phone|charger|cable|airtag", "mdi:cellphone"),
-    (r"headphone|earbud|airpod|speaker", "mdi:headphones"),
     (r"camera|lens|tripod", "mdi:camera"),
-    (r"print|frame|poster|\bart\b|canvas|painting", "mdi:image-frame"),
+    (r"\bprints?\b|frame|poster|\bart\b|canvas|painting", "mdi:image-frame"),
     (r"plant|seed|garden|soil|fertili|flower", "mdi:sprout"),
     (r"vitamin|pill|medic|supplement|pharm", "mdi:pill"),
     (
@@ -81,7 +83,7 @@ ICON_RULES: tuple[tuple[str, str], ...] = (
         r"\bdog\b|\bcat\b|\bpet|puppy|kitten|purina|pedigree|\bbreed\b|leash|litter|kibble",
         "mdi:paw",
     ),
-    (r"tool|drill|hammer|wrench|screw", "mdi:hammer-wrench"),
+    (r"\btool|drill|hammer|wrench|screw", "mdi:hammer-wrench"),
     (r"\bpan\b|\bpot\b|kitchen|knife|cook|blender", "mdi:pot-steam"),
     (r"wine", "mdi:glass-wine"),
     (r"food|snack|grocer|candy|chocolate", "mdi:food-apple"),
@@ -157,8 +159,18 @@ def detect_carriers(number: str, known: Iterable[str] | None = None) -> list[str
     return found
 
 
+# Dates outside these years are placeholders ("9999-12-31", timestamp 0) rather than
+# real dates, and the far ends of the calendar can't even be moved between time zones.
+_YEARS = range(2000, 2101)
+
+
 def parse_parcel_datetime(value: Any, tz: tzinfo) -> datetime | None:
     """Parse a Parcel date or timestamp. Returns None for blanks and placeholders like "--//--"."""
+    parsed = _parse_datetime(value, tz)
+    return parsed if parsed is not None and parsed.year in _YEARS else None
+
+
+def _parse_datetime(value: Any, tz: tzinfo) -> datetime | None:
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
@@ -239,7 +251,7 @@ class Delivery:
         carrier_code = str(raw["carrier_code"]).strip()
         try:
             status_code = int(raw.get("status_code", NOT_FOUND))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             status_code = NOT_FOUND
         events: list[TrackingEvent] = []
         for item in raw.get("events") or []:

@@ -67,7 +67,7 @@ def deliveries() -> list[dict[str, Any]]:
         raw(
             "TBA312345678901",
             "amzlus",
-            "Purina Pro Plan Small Breed",
+            "Dog food",
             2,
             events=[{"event": "Package left the shipper facility", "date": "--//--"}],
             date_expected="2026-11-16 00:00:00",

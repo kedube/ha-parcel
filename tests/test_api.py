@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import aiohttp
+from aiohttp import web as aioweb
+from aiohttp.test_utils import TestServer
 import pytest
 from pytest_homeassistant_custom_component.test_util.aiohttp import AiohttpClientMocker
 
@@ -101,11 +105,13 @@ async def test_too_many_requests_carries_parcels_wait(
         await client(hass).async_get_deliveries()
     assert raised.value.retry_after == 120
 
-    aioclient_mock.clear_requests()
-    aioclient_mock.get(LIST_URL, status=429, headers={"Retry-After": "soon"}, text="")
-    with pytest.raises(ParcelRateLimitError) as raised:
-        await client(hass).async_get_deliveries()
-    assert raised.value.retry_after is None
+    # A wait that isn't a number of seconds (or is endless, or negative) is ignored.
+    for unusable in ("soon", "inf", "nan", "-5"):
+        aioclient_mock.clear_requests()
+        aioclient_mock.get(LIST_URL, status=429, headers={"Retry-After": unusable}, text="")
+        with pytest.raises(ParcelRateLimitError) as raised:
+            await client(hass).async_get_deliveries()
+        assert raised.value.retry_after is None, unusable
 
     aioclient_mock.clear_requests()
     aioclient_mock.get(LIST_URL, json={"success": False, "error_message": "Rate limit exceeded"})
@@ -128,6 +134,50 @@ async def test_an_answer_that_makes_no_sense_is_an_error(
     with pytest.raises(ParcelError) as raised:
         await client(hass).async_get_deliveries()
     assert type(raised.value) is ParcelError
+
+
+@pytest.mark.parametrize(
+    "body", [b"\xff\xfe{\x00}", b"[" * 200_000], ids=["not utf-8", "nested too deeply"]
+)
+async def test_an_answer_that_cant_be_read_is_an_error(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker, body: bytes
+) -> None:
+    """Like any other answer that makes no sense, so a short outage is still ridden out."""
+    aioclient_mock.get(LIST_URL, content=body)
+    with pytest.raises(ParcelError) as raised:
+        await client(hass).async_get_deliveries()
+    assert type(raised.value) is ParcelError
+
+
+async def test_the_key_never_follows_a_redirect(hass: HomeAssistant, socket_enabled: None) -> None:
+    """aiohttp would carry the api-key header along to wherever a redirect points."""
+    reached: list[str] = []
+
+    async def elsewhere(request: aioweb.Request) -> aioweb.Response:
+        reached.append(request.headers.get("api-key", ""))
+        return aioweb.json_response({"success": True, "deliveries": []})
+
+    async def redirect(request: aioweb.Request) -> aioweb.Response:
+        raise aioweb.HTTPFound(f"http://127.0.0.1:{other.port}/collect")
+
+    servers = []
+    for handler in (elsewhere, redirect):
+        app = aioweb.Application()
+        app.router.add_route("*", "/{tail:.*}", handler)
+        servers.append(TestServer(app, host="127.0.0.1"))
+        await servers[-1].start_server()
+    other, source = servers
+    try:
+        url = f"http://127.0.0.1:{source.port}/external/deliveries/"
+        with (
+            patch("custom_components.parcel.api.DELIVERIES_URL", url),
+            pytest.raises(ParcelError, match="redirect"),
+        ):
+            await client(hass).async_get_deliveries()
+    finally:
+        for server in servers:
+            await server.close()
+    assert reached == []
 
 
 @pytest.mark.parametrize("failure", [TimeoutError(), aiohttp.ClientConnectionError("down")])

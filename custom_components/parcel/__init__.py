@@ -2,31 +2,26 @@
 
 from __future__ import annotations
 
-import aiohttp
-
 from homeassistant.const import CONF_API_KEY, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv, device_registry as dr
-from homeassistant.helpers.aiohttp_client import (
-    async_create_clientsession,
-    async_get_clientsession,
-)
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 
 from .api import ParcelClient, ParcelWebClient
 from .carriers import CarrierRegistry
-from .const import CONF_ACCOUNT_TOKEN, DATA_CARRIERS, DOMAIN, PARCEL_WEB_URL
+from .const import CONF_ACCOUNT_TOKEN, DATA_CARRIERS, DOMAIN
 from .coordinator import ParcelConfigEntry, ParcelCoordinator
+from .entity import device_info
 from .panel import async_notify_panel, async_register_panel, async_unregister_panel
 from .services import async_setup_services
 from .storage import ParcelStorage
-from .web_sign_in import async_clear_issues
+from .web_sign_in import async_clear_issues, web_session
 from .websocket import async_setup_websocket
 
 PLATFORMS = [Platform.BUTTON, Platform.EVENT, Platform.SENSOR]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
-DATA_WEB_SESSION = f"{DOMAIN}_web_session"
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -37,16 +32,6 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
-def _web_session(hass: HomeAssistant) -> aiohttp.ClientSession:
-    """One session for web calls, with no cookie jar so accounts never mix."""
-    if DATA_WEB_SESSION not in hass.data:
-        hass.data[DATA_WEB_SESSION] = async_create_clientsession(
-            hass, cookie_jar=aiohttp.DummyCookieJar()
-        )
-    session: aiohttp.ClientSession = hass.data[DATA_WEB_SESSION]
-    return session
-
-
 async def async_setup_entry(hass: HomeAssistant, entry: ParcelConfigEntry) -> bool:
     """Set up one Parcel account."""
     carriers: CarrierRegistry = hass.data[DATA_CARRIERS]
@@ -54,17 +39,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ParcelConfigEntry) -> bo
     await storage.async_load()
     client = ParcelClient(async_get_clientsession(hass), entry.data[CONF_API_KEY])
     token = entry.options.get(CONF_ACCOUNT_TOKEN)
-    web_client = ParcelWebClient(_web_session(hass), token) if token else None
+    web_client = ParcelWebClient(web_session(hass), token) if token else None
     coordinator = ParcelCoordinator(hass, entry, client, storage, carriers, web_client)
 
+    # Created here rather than by the first entity, because events carry its id.
     device = dr.async_get(hass).async_get_or_create(
-        config_entry_id=entry.entry_id,
-        identifiers={(DOMAIN, entry.entry_id)},
-        name=entry.title,
-        manufacturer="Parcel",
-        model="Package tracking",
-        entry_type=dr.DeviceEntryType.SERVICE,
-        configuration_url=PARCEL_WEB_URL,
+        config_entry_id=entry.entry_id, **device_info(entry)
     )
     coordinator.device_id = device.id
 

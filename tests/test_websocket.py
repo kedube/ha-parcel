@@ -5,9 +5,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import MockConfigEntry, MockUser
 from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
+from homeassistant.auth.const import GROUP_ID_USER
+from homeassistant.auth.models import Credentials
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
@@ -177,3 +179,97 @@ async def test_checking_now_from_the_panel(
     assert answer["error"]["code"] == "refresh_failed"
     assert answer["error"]["message"].startswith("Parcel allows 20 checks an hour")
     assert mock_parcel.get.await_count == 1
+
+
+async def regular_user_token(hass: HomeAssistant) -> str:
+    """A sign-in for someone who isn't an administrator (and isn't read-only either)."""
+    user = MockUser(groups=[await hass.auth.async_get_group(GROUP_ID_USER)], name="household")
+    user.add_to_hass(hass)
+    credential = Credentials(
+        id="household",
+        auth_provider_type="homeassistant",
+        auth_provider_id=None,
+        data={"username": "household"},
+        is_new=False,
+    )
+    user.credentials.append(credential)
+    refresh = await hass.auth.async_create_refresh_token(
+        user, "https://example.com/app", credential=credential
+    )
+    return hass.auth.async_create_access_token(refresh)
+
+
+async def test_read_only_users_can_look_but_not_change(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_access_token: str,
+    mock_parcel: SimpleNamespace,
+    config_entry: MockConfigEntry,
+) -> None:
+    await setup(hass, config_entry)
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+    assert (await ask(client, type="parcel/subscribe"))["success"]
+    await client.receive_json()  # the packages
+
+    entry_id = config_entry.entry_id
+    for message in (
+        {"type": "parcel/add", "tracking_number": "9400111202555842332669", "description": "Socks"},
+        {"type": "parcel/delete", "entry_id": entry_id, "key": UPS_KEY},
+        {"type": "parcel/set_icon", "entry_id": entry_id, "key": UPS_KEY, "icon": "mdi:gift"},
+        {"type": "parcel/refresh"},
+    ):
+        answer = await ask(client, **message)
+        assert not answer["success"], message["type"]
+        assert answer["error"]["code"] == "unauthorized", message["type"]
+    # The actions are refused too (Home Assistant reports that as a general error).
+    answer = await ask(
+        client,
+        type="call_service",
+        domain="parcel",
+        service="delete_package",
+        service_data={"tracking_number": "1Z999AA10123456784"},
+    )
+    assert not answer["success"]
+    assert answer["error"]["message"] == "Unauthorized"
+    mock_parcel.add.assert_not_awaited()
+    mock_parcel.web_delete.assert_not_awaited()
+    assert config_entry.runtime_data.storage.icons == {}
+
+
+async def test_household_members_can_change_packages(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    mock_parcel: SimpleNamespace,
+    config_entry: MockConfigEntry,
+) -> None:
+    """Not only administrators: anyone who may control the account's entities."""
+    await setup(hass, config_entry)
+    client = await hass_ws_client(hass, await regular_user_token(hass))
+    answer = await ask(
+        client, type="parcel/set_icon", entry_id=config_entry.entry_id, key=UPS_KEY, icon="mdi:gift"
+    )
+    assert answer["success"]
+    answer = await ask(
+        client,
+        type="call_service",
+        domain="parcel",
+        service="add_package",
+        service_data={"tracking_number": "9400111202555842332669", "description": "Socks"},
+    )
+    assert answer["success"]
+    mock_parcel.add.assert_awaited_once()
+
+
+async def test_runaway_text_is_refused_before_parcel_sees_it(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    mock_parcel: SimpleNamespace,
+    config_entry: MockConfigEntry,
+) -> None:
+    await setup(hass, config_entry)
+    client = await hass_ws_client(hass)
+    answer = await ask(
+        client, type="parcel/add", tracking_number="9400111202555842332669", description="x" * 201
+    )
+    assert answer["error"]["code"] == "invalid_format"
+    mock_parcel.add.assert_not_awaited()

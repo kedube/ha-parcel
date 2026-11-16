@@ -6,6 +6,7 @@ from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
+from .const import PLACEHOLDER_CARRIER
 from .models import DELIVERED, Delivery, TrackingEvent, normalize_number
 from .storage import PendingRecord
 
@@ -56,11 +57,11 @@ def find_stored(
 ) -> tuple[str, str] | None:
     """The (tracking number, carrier) Parcel's web app holds for a package.
 
-    The number decides. Only for a package Parcel hasn't listed through its API yet
-    (pass its name as unlisted_name) is the name tried as well, because Parcel may have
-    stored a number of its own for it. Packages that are already listed (their
-    normalized numbers go in listed_numbers) are never picked by name, so a package
-    that merely shares a name can't be mistaken for the one being looked up.
+    The number decides. Parcel numbers placeholder packages itself, so for a
+    placeholder it hasn't listed through its API yet (pass its name as unlisted_name)
+    the name is tried as well. Even then, a package that is already listed (normalized
+    numbers in listed_numbers) or already delivered is never picked, so an older
+    package that merely shares the name can't be mistaken for the one looked up.
     """
     wanted = normalize_number(number)
     for item in items:
@@ -69,7 +70,7 @@ def find_stored(
             and normalize_number(str(item.get("tracking_number", ""))) == wanted
         ):
             return str(item["tracking_number"]), carrier
-    if unlisted_name is None:
+    if unlisted_name is None or carrier != PLACEHOLDER_CARRIER:
         return None
     named = [
         item
@@ -77,12 +78,22 @@ def find_stored(
         if item.get("carrier_code") == carrier
         and item.get("label") == unlisted_name
         and item.get("tracking_number")
+        and item.get("status_code") != DELIVERED
         and normalize_number(str(item["tracking_number"])) not in listed_numbers
     ]
     if not named:
         return None
     newest = max(named, key=lambda item: str(item.get("date_added") or ""))
     return str(newest["tracking_number"]), carrier
+
+
+def lists_any(items: Sequence[Mapping[str, Any]], numbers: Collection[str]) -> bool:
+    """Whether a web-app list holds any of these normalized tracking numbers.
+
+    Every package on its way is in the account's web list, so a list holding none of
+    the account's packages is another account's (or didn't come through whole).
+    """
+    return any(normalize_number(str(item.get("tracking_number", ""))) in numbers for item in items)
 
 
 def delivered_time(

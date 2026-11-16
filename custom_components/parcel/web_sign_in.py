@@ -5,15 +5,19 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import logging
 
+import aiohttp
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.util import dt as dt_util
 
 from .api import ParcelError, ParcelWebAuthError, ParcelWebClient
 from .const import (
     CONF_ACCOUNT_TOKEN_SET_AT,
+    DATA_WEB_SESSION,
     DOMAIN,
     WEB_SIGN_IN_CHECK_INTERVAL,
     WEB_SIGN_IN_DOCS_URL,
@@ -23,6 +27,20 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@callback
+def web_session(hass: HomeAssistant) -> aiohttp.ClientSession:
+    """The session for Parcel's web app, shared by every account and the options form.
+
+    It keeps no cookies: each request carries its own account's sign-in, and nothing
+    a response sets is stored or sent with another request.
+    """
+    session: aiohttp.ClientSession | None = hass.data.get(DATA_WEB_SESSION)
+    if session is None:
+        session = async_create_clientsession(hass, cookie_jar=aiohttp.DummyCookieJar())
+        hass.data[DATA_WEB_SESSION] = session
+    return session
 
 
 def expired_issue_id(entry_id: str) -> str:

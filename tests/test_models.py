@@ -100,15 +100,54 @@ def test_bad_status_and_missing_name() -> None:
     assert delivery.key == "usps:123"
 
 
+def test_placeholder_and_impossible_dates_are_unknown() -> None:
+    """Dates far outside the present are stand-ins, and some couldn't even change zone."""
+    for value in (
+        253402300799,  # 9999-12-31, a common "no date"
+        0,  # 1970
+        -62135596800,  # the first day of year 1
+        "9999-12-31",
+        "0001-01-01T00:00:00+05:00",
+    ):
+        assert parse_parcel_datetime(value, TZ) is None, value
+    assert parse_parcel_datetime("2026-11-16 13:00:00", TZ) == datetime(2026, 11, 16, 13, tzinfo=TZ)
+    delivery = Delivery.from_api(
+        {
+            "tracking_number": "1",
+            "carrier_code": "usps",
+            "status_code": float("inf"),
+            "timestamp_expected": 253402300799,
+            "date_expected": "0001-01-01T00:00:00+05:00",
+        },
+        ZoneInfo("Europe/Berlin"),
+    )
+    assert delivery.status == "not_found"
+    assert (delivery.eta_start, delivery.eta_end, delivery.eta_date) == (None, None, None)
+
+
 def test_icons_for_real_names() -> None:
     """Icons are guessed from words in the name."""
-    assert guess_icon("iwillink 2 Pack Outdoor Extension Cord Cover") == "mdi:power-plug-outline"
-    assert guess_icon("Purina Pro Plan Small Breed") == "mdi:paw"
+    assert guess_icon("2 Pack Outdoor Extension Cord Cover") == "mdi:power-plug-outline"
+    assert guess_icon("Small breed dog food") == "mdi:paw"
     assert guess_icon("Coffee grinder") == "mdi:coffee"
     assert guess_icon("LED Desk Lamp with USB Charging Port") == "mdi:desk-lamp"
     assert guess_icon("Plant food") == "mdi:sprout"
     assert guess_icon("Something else entirely") == "mdi:package-variant-closed"
     assert guess_icon(None) == "mdi:package-variant-closed"
+
+
+def test_a_word_inside_another_word_does_not_decide_the_icon() -> None:
+    """The narrower rule wins: these used to come out as a book, a phone and a lamp."""
+    assert guess_icon("MacBook Air 13") == "mdi:laptop"
+    assert guess_icon("Chromebook") == "mdi:laptop"
+    assert guess_icon("Wireless headphones") == "mdi:headphones"
+    assert guess_icon("Lightning to USB-C cable") == "mdi:cellphone"
+    assert guess_icon("Flight jacket") == "mdi:tshirt-crew"
+    assert guess_icon("LED string lights") == "mdi:desk-lamp"
+    assert guess_icon("Art print") == "mdi:image-frame"
+    assert guess_icon("Printer ink") == "mdi:package-variant-closed"
+    assert guess_icon("Bar stool") == "mdi:package-variant-closed"
+    assert guess_icon("Toolbox") == "mdi:hammer-wrench"
 
 
 def test_carrier_detection() -> None:

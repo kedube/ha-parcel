@@ -26,6 +26,8 @@ Read first-hand from the public JavaScript that web.parcelapp.net serves (`/js/3
 ## Home Assistant
 
 - Home Assistant's developer documentation, and the signatures of the platform functions an integration must call (config flows, coordinators, entities, panels, websocket commands, device triggers, repairs), read from an installed copy of Home Assistant.
+- Home Assistant starts its web server before custom integrations finish loading, and the frontend's websocket library repeats a subscription after a reconnect without reporting it when that fails (both read from an installed copy of Home Assistant and its frontend). The panel therefore subscribes again itself whenever the connection comes back.
+- The manifest's `categories` key and its allowed values: Home Assistant's [integration categories](https://contributors.home-assistant.io/core/integrations/categories/) page.
 - Schemas are written with [Probatio](https://probatio.frenck.dev), which Home Assistant has used in place of voluptuous since 2026.9 ([announcement](https://contributors.home-assistant.io/blog/2026/09/30/probatio-validation-engine)).
 
 ## Logo and icon

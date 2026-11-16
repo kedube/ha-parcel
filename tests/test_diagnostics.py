@@ -10,7 +10,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .test_init import setup
-from custom_components.parcel.api import ParcelConnectionError
+from custom_components.parcel.api import ParcelConnectionError, ParcelRequestError
 from custom_components.parcel.diagnostics import async_get_config_entry_diagnostics
 
 
@@ -26,7 +26,9 @@ async def test_nothing_personal_is_left_in(
             "date": "2026-11-15 08:14:00",
             "location": "Memphis, TN",
             "additional": "Left with neighbour at number 12",
-        }
+        },
+        # A date that can't be read is kept as the carrier wrote it.
+        {"event": "Arrived", "date": "Leave at side gate, code 4821"},
     ]
     await setup(hass, config_entry)
     diagnostics = await async_get_config_entry_diagnostics(hass, config_entry)
@@ -38,12 +40,13 @@ async def test_nothing_personal_is_left_in(
         "1Z999AA10123456784",
         "TBA312345678901",
         "Coffee grinder",
-        "Purina",
+        "Dog food",
         "J SMITH",
         "MEMPHIS",
         "Memphis",
         "neighbour",
         "123-456",
+        "4821",
     ):
         assert private not in text, private
 
@@ -67,3 +70,16 @@ async def test_the_latest_problem_is_included(
     await config_entry.runtime_data.async_refresh()
     diagnostics = await async_get_config_entry_diagnostics(hass, config_entry)
     assert diagnostics["status"]["last_error"] == "Couldn't reach Parcel: timed out"
+
+
+async def test_a_package_named_in_an_error_is_left_out(
+    hass: HomeAssistant, mock_parcel: SimpleNamespace, config_entry: MockConfigEntry
+) -> None:
+    """Parcel's own error text is kept, minus any tracking number or name in it."""
+    await setup(hass, config_entry)
+    mock_parcel.get.side_effect = ParcelRequestError(
+        "Couldn't refresh 1Z999AA10123456784 (Coffee grinder)"
+    )
+    await config_entry.runtime_data.async_refresh()
+    diagnostics = await async_get_config_entry_diagnostics(hass, config_entry)
+    assert diagnostics["status"]["last_error"] == "Couldn't refresh **REDACTED** (**REDACTED**)"

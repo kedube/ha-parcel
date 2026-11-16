@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from homeassistant.auth.models import User
+from homeassistant.auth.permissions.const import POLICY_CONTROL
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN
 from .coordinator import ParcelCoordinator
@@ -40,3 +43,19 @@ def one_coordinator(hass: HomeAssistant, entry_id: str | None) -> ParcelCoordina
     if len(coordinators) > 1:
         raise ServiceValidationError(translation_domain=DOMAIN, translation_key="choose_account")
     return coordinators[0]
+
+
+@callback
+def may_change(hass: HomeAssistant, user: User) -> bool:
+    """Whether a person may add, delete or check packages, or change an icon.
+
+    The same rule Home Assistant applies to the actions: anyone who may control a
+    Parcel entity. That's admins and regular users; read-only users can only look.
+    """
+    if user.is_admin:
+        return True
+    return any(
+        user.permissions.check_entity(entry.entity_id, POLICY_CONTROL)
+        for entry in er.async_get(hass).entities.values()
+        if entry.platform == DOMAIN
+    )

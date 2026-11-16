@@ -54,7 +54,7 @@ Parcel's API can add and list packages but can't delete them. To delete from Hom
 3. Copy the value of the cookie named **`account_token`**.
 4. In Home Assistant, go to **Settings › Devices & services › Parcel › Configure**, paste it into **Parcel web sign-in**, and select **Submit**. Home Assistant checks it before saving.
 
-A saved sign-in is never shown again, so the box is empty the next time you open **Configure**; leave it empty to keep what's saved. To stop deleting from Home Assistant, turn on **Remove the saved web sign-in**.
+A saved sign-in is never shown again, so the box is empty the next time you open **Configure**; leave it empty to keep what's saved. When it can tell, Home Assistant also checks that the sign-in belongs to the same Parcel account as the API key. To stop deleting from Home Assistant, turn on **Remove the saved web sign-in**. That makes Home Assistant forget it; to cancel the sign-in itself, sign out at web.parcelapp.net.
 
 The sign-in lasts about a year (Parcel doesn't extend it when it's used). Home Assistant checks it once a day: it shows a repair notice about two weeks before it expires, and right away if it stops working early (for example, after signing out of the web app). Repeat these steps to paste the new one. Treat `account_token` like a password: it gives full access to your Parcel account. Parcel doesn't document these web calls, so a change on Parcel's side could stop deleting from working until this integration is updated.
 
@@ -150,6 +150,8 @@ action: parcel.refresh
 
 With more than one Parcel account, add `config_entry_id` to say which one.
 
+Anyone who can sign in to Home Assistant can add, delete and check packages, from the panel or with these actions, except read-only users, who can only look.
+
 ## Limits
 
 Parcel allows **20 checks an hour** and **20 new packages a day** through its API, and failed adds count. The integration works within those limits:
@@ -165,7 +167,7 @@ Parcel's API returns Parcel's own cached copy of your deliveries, so changes rea
 
 ## Privacy
 
-Your API key and web sign-in are stored in Home Assistant like other integration credentials. Package details are kept in Home Assistant's `.storage` folder so restarts don't spend checks. The integration talks only to Parcel. Diagnostics downloads remove keys, tokens, tracking numbers, names, locations and the carriers' own update text.
+Your API key and web sign-in are stored in Home Assistant like other integration credentials. Package details are kept in Home Assistant's `.storage` folder so restarts don't spend checks. The per-package sensors keep tracking numbers, locations and carrier updates out of Home Assistant's history; the event entity and the `parcel_package_update` event do record them, since automations use them. The integration talks only to Parcel. Diagnostics downloads remove keys, tokens, tracking numbers, names, locations and the carriers' own update text.
 
 ## Troubleshooting
 
@@ -173,6 +175,7 @@ Your API key and web sign-in are stored in Home Assistant like other integration
 - **Packages added in the Parcel app take a few minutes to show up**: that's Parcel's cache; select the refresh button to check sooner.
 - **"Parcel asked Home Assistant to slow down"**: Parcel limited requests for a while. Nothing is lost; checks resume on their own at the time shown. If you see this often, raise the check interval in **Configure**, and make sure the same API key isn't used by another Home Assistant or script.
 - **Deleting says the sign-in expired**: paste a new `account_token` (see above).
+- **Deleting says the sign-in may be for a different account**: the saved `account_token` came from another Parcel account. Sign in at web.parcelapp.net with the account this integration uses and paste its `account_token`.
 - **A new package shows "Waiting for first update"**: Parcel hasn't heard from the carrier yet. It changes on its own.
 
 ## Development

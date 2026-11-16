@@ -99,6 +99,7 @@ class ParcelPackagesPanel extends LitElement {
     this._items = [];
     this._iconRules = [];
     this._onKey = this._onKey.bind(this);
+    this._onReconnect = this._onReconnect.bind(this);
     this._onDocClick = () => {
       if (this._menuFor) this._menuFor = null;
     };
@@ -165,18 +166,42 @@ class ParcelPackagesPanel extends LitElement {
 
   _subscribe() {
     if (this._unsub || !this.hass || !this.isConnected) return;
-    this._unsub = this.hass.connection
-      .subscribeMessage((payload) => {
-        this._subError = '';
-        this._payload = payload;
-      }, { type: 'parcel/subscribe' })
+    const connection = this.hass.connection;
+    if (this._connection !== connection) {
+      this._connection?.removeEventListener('ready', this._onReconnect);
+      connection.addEventListener('ready', this._onReconnect);
+      this._connection = connection;
+    }
+    // Not resubscribe: after Home Assistant restarts, the browser reconnects before
+    // this integration has loaded, and a repeat the library makes then fails without
+    // telling anyone. _onReconnect subscribes afresh instead, and a failure is retried
+    // on the 30-second tick.
+    this._unsub = connection
+      .subscribeMessage(
+        (payload) => {
+          this._subError = '';
+          this._payload = payload;
+        },
+        { type: 'parcel/subscribe' },
+        { resubscribe: false },
+      )
       .catch((err) => {
         this._subError = err?.message || 'Couldn’t load packages';
         this._unsub = undefined;
       });
   }
 
+  /** The connection came back: the old subscription ended with the old connection. */
+  _onReconnect() {
+    // Its unsubscribe would now name another subscription on the new connection,
+    // so it is dropped rather than called.
+    this._unsub = undefined;
+    this._subscribe();
+  }
+
   _unsubscribe() {
+    this._connection?.removeEventListener('ready', this._onReconnect);
+    this._connection = undefined;
     if (!this._unsub) return;
     this._unsub.then((unsub) => unsub?.()).catch(() => {});
     this._unsub = undefined;
@@ -431,7 +456,7 @@ class ParcelPackagesPanel extends LitElement {
     const behind = Boolean(selected || this._addOpen || this._confirmFor);
 
     let body;
-    if (this._subError) body = html`<div class="banner">${uiIcon(ICON.warn)}<span>${this._subError}</span></div>`;
+    if (this._subError && !this._payload) body = html`<div class="banner">${uiIcon(ICON.warn)}<span>${this._subError}</span></div>`;
     else if (!this._payload) body = html`<p class="loading">Loading packages…</p>`;
     else if (!entries.length) body = html`<p class="loading">Parcel isn’t set up. Add it in Settings › Devices &amp; services.</p>`;
     else if (!this._items.length) body = this._renderEmpty();
@@ -466,6 +491,9 @@ class ParcelPackagesPanel extends LitElement {
         </div>
       </header>
       <main class="main" ?inert=${behind}>
+        ${this._subError && this._payload
+          ? html`<div class="banner" role="status">${uiIcon(ICON.warn)}<span>Lost touch with Home Assistant, so this may be out of date. Trying again…</span></div>`
+          : nothing}
         ${errors.map((e) => html`<div class="banner" role="status">${uiIcon(ICON.warn)}<span>${entries.length > 1 ? `${e.title}: ` : ''}${e.last_error}</span></div>`)}
         ${paused.map((e) => html`<div class="banner info" role="status">${uiIcon(ICON.info)}<span>${entries.length > 1 ? `${e.title}: ` : ''}Parcel asked Home Assistant to slow down. This is the last update it has; it will check again around ${this._fmt.time(toDate(e.paused_until))}.</span></div>`)}
         ${body}

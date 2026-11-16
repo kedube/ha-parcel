@@ -41,9 +41,9 @@ async def test_setup_creates_summary_and_package_sensors(
     grinder = hass.states.get("sensor.parcel_coffee_grinder")
     assert grinder.state == "in_transit"
     assert grinder.attributes["icon"] == "mdi:coffee"
-    purina = hass.states.get("sensor.parcel_purina_pro_plan_small_breed")
-    assert purina.attributes["icon"] == "mdi:paw"
-    assert purina.attributes["expected"] == "2026-11-16"
+    dog_food = hass.states.get("sensor.parcel_dog_food")
+    assert dog_food.attributes["icon"] == "mdi:paw"
+    assert dog_food.attributes["expected"] == "2026-11-16"
     assert hass.states.get("event.parcel_package_update") is not None
     assert hass.states.get("button.parcel_check_for_updates") is not None
 
@@ -167,10 +167,10 @@ async def test_placeholder_pending_matches_by_name(
         description="Test placeholder",
         icon="mdi:gift",
     )
-    deliveries.append(raw("450436033378735815683", "pholder", "Test placeholder", 1))
+    deliveries.append(raw("450000000000000000001", "pholder", "Test placeholder", 1))
     await coordinator.async_refresh()
     assert coordinator.data.pending == {}
-    assert coordinator.icon_for("pholder:450436033378735815683", "Test placeholder") == "mdi:gift"
+    assert coordinator.icon_for("pholder:450000000000000000001", "Test placeholder") == "mdi:gift"
 
 
 async def test_add_validation(

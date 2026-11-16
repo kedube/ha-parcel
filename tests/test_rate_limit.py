@@ -146,6 +146,21 @@ async def test_rate_limit_while_running_keeps_packages_visible(
     assert mock_parcel.get.await_count == 2
 
 
+@pytest.mark.parametrize("asked", [3.2e9, 1e20])
+async def test_a_wait_of_years_is_cut_to_hours(
+    hass: HomeAssistant, mock_parcel: SimpleNamespace, config_entry: MockConfigEntry, asked: float
+) -> None:
+    """However long Parcel asks for, checks pause for at most two hours."""
+    assert await start(hass, config_entry)
+    coordinator = config_entry.runtime_data
+    mock_parcel.get.side_effect = ParcelRateLimitError("slow down", retry_after=asked)
+    await coordinator.async_refresh()
+    assert coordinator.last_update_success
+    until = coordinator.storage.rate_limited_until(dt_util.utcnow())
+    assert until is not None
+    assert timedelta(minutes=110) < until - dt_util.utcnow() <= timedelta(hours=2)
+
+
 async def test_unreachable_at_startup_retries_as_usual(
     hass: HomeAssistant,
     hass_storage: dict[str, Any],

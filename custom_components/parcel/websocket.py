@@ -12,9 +12,9 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import translation
 
-from .accounts import coordinators_for, one_coordinator
+from .accounts import coordinators_for, may_change, one_coordinator
 from .carriers import CarrierRegistry
-from .const import DATA_CARRIERS, DATA_SUBSCRIBERS, DOMAIN
+from .const import DATA_CARRIERS, DATA_SUBSCRIBERS, DOMAIN, MAX_NAME_LENGTH, MAX_NUMBER_LENGTH
 from .models import CARRIER_PATTERNS
 from .panel import panel_payload, suggested_carriers
 
@@ -24,6 +24,20 @@ def async_setup_websocket(hass: HomeAssistant) -> None:
     """Register the panel's commands."""
     for handler in (ws_subscribe, ws_refresh, ws_add, ws_delete, ws_set_icon, ws_carriers):
         websocket_api.async_register_command(hass, handler)
+
+
+LOOK_ONLY = "Your Home Assistant user can look at packages but not change them."
+
+
+@callback
+def _refused(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> bool:
+    """Answer with an error, and return True, when this person may only look."""
+    if may_change(hass, connection.user):
+        return False
+    connection.send_error(msg["id"], websocket_api.ERR_UNAUTHORIZED, LOOK_ONLY)
+    return True
 
 
 async def _message(hass: HomeAssistant, err: HomeAssistantError) -> str:
@@ -73,6 +87,8 @@ async def ws_refresh(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Check Parcel now."""
+    if _refused(hass, connection, msg):
+        return
     try:
         for coordinator in coordinators_for(hass, msg.get("entry_id")):
             await coordinator.async_manual_refresh()
@@ -86,10 +102,10 @@ async def ws_refresh(
     {
         vol.Required("type"): "parcel/add",
         vol.Optional("entry_id"): str,
-        vol.Required("tracking_number"): str,
-        vol.Required("description"): str,
+        vol.Required("tracking_number"): vol.All(str, vol.Length(max=MAX_NUMBER_LENGTH)),
+        vol.Required("description"): vol.All(str, vol.Length(max=MAX_NAME_LENGTH)),
         vol.Optional("carrier_code"): vol.Any(str, None),
-        vol.Optional("extra"): vol.Any(str, None),
+        vol.Optional("extra"): vol.Any(vol.All(str, vol.Length(max=MAX_NAME_LENGTH)), None),
         vol.Optional("send_push_confirmation", default=False): bool,
         vol.Optional("icon"): vol.Any(str, None),
     }
@@ -99,6 +115,8 @@ async def ws_add(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Add a package."""
+    if _refused(hass, connection, msg):
+        return
     try:
         result = await one_coordinator(hass, msg.get("entry_id")).async_add_package(
             tracking_number=msg["tracking_number"],
@@ -122,6 +140,8 @@ async def ws_delete(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Delete a package from Parcel."""
+    if _refused(hass, connection, msg):
+        return
     try:
         await one_coordinator(hass, msg["entry_id"]).async_delete_package(msg["key"])
     except HomeAssistantError as err:
@@ -143,6 +163,8 @@ async def ws_set_icon(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Change a package's icon (stored in Home Assistant only)."""
+    if _refused(hass, connection, msg):
+        return
     try:
         one_coordinator(hass, msg["entry_id"]).async_set_icon(msg["key"], msg["icon"])
     except HomeAssistantError as err:

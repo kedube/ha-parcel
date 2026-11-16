@@ -297,3 +297,29 @@ async def test_saving_options_restarts_the_account(
         await hass.async_block_till_done()
     assert config_entry.runtime_data.update_interval == timedelta(minutes=15)
     assert config_entry.runtime_data.web_client is not None
+
+
+async def test_a_sign_in_from_another_account_is_refused(
+    hass: HomeAssistant, mock_parcel: SimpleNamespace, config_entry: MockConfigEntry
+) -> None:
+    """Its list must hold at least one of this account's packages on their way."""
+    config_entry.add_to_hass(hass)
+    with patch("custom_components.parcel.async_register_panel", new_callable=AsyncMock):
+        assert await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done()
+        form = {"scan_interval": 5, "package_sensors": True, CONF_ACCOUNT_TOKEN: "their-token"}
+        mock_parcel.web_list.side_effect = None
+        mock_parcel.web_list.return_value = [
+            {"tracking_number": "9400111202555842332669", "carrier_code": "usps", "label": "x"}
+        ]
+        result = await hass.config_entries.options.async_init(config_entry.entry_id)
+        result = await hass.config_entries.options.async_configure(result["flow_id"], form)
+        assert result["errors"] == {CONF_ACCOUNT_TOKEN: "account_token_other_account"}
+
+        mock_parcel.web_list.return_value = [
+            {"tracking_number": "TBA312345678901", "carrier_code": "amzlus", "label": "x"}
+        ]
+        result = await hass.config_entries.options.async_configure(result["flow_id"], form)
+        await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert config_entry.options[CONF_ACCOUNT_TOKEN] == "their-token"

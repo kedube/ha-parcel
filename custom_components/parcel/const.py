@@ -20,8 +20,9 @@ WEB_DELETE_URL: Final = f"{WEB_BASE}/delete-ajax.php"
 WEB_LIST_URL: Final = f"{WEB_BASE}/download-ajax.php"
 WEB_COOKIE: Final = "account_token"
 WEB_AUTH_ERROR: Final = "failed_verification"
+# Parcel's carrier code for a placeholder package, which Parcel gives a number of its own.
+PLACEHOLDER_CARRIER: Final = "pholder"
 
-DOCS_URL: Final = "https://github.com/kedube/ha-parcel#readme"
 API_KEY_DOCS_URL: Final = "https://github.com/kedube/ha-parcel#get-your-parcel-api-key"
 WEB_SIGN_IN_DOCS_URL: Final = (
     "https://github.com/kedube/ha-parcel#let-home-assistant-delete-packages"
@@ -54,6 +55,8 @@ MANUAL_REFRESH_RESERVE: Final = 2  # keep a couple of reads for scheduled checks
 MANUAL_REFRESH_MIN_GAP: Final = timedelta(seconds=60)
 ADDS_PER_DAY: Final = 20
 RATE_LIMIT_BACKOFF: Final = timedelta(minutes=20)
+# The longest pause a Retry-After from Parcel can ask for; its limits reset hourly.
+RATE_LIMIT_MAX_PAUSE: Final = timedelta(hours=2)
 # When a check fails (Parcel unreachable), the last known packages stay on show for
 # this long, or for this many check intervals if that is longer.
 OUTAGE_GRACE: Final = timedelta(minutes=30)
@@ -96,6 +99,11 @@ EVENT_TYPES: Final = [
     EVENT_REMOVED,
 ]
 
+# Longest text accepted for a new package. Generous: they only stop runaway input
+# from being sent to Parcel, where a rejected add still counts toward the day's 20.
+MAX_NUMBER_LENGTH: Final = 100
+MAX_NAME_LENGTH: Final = 200
+
 # Sidebar panel
 PANEL_URL: Final = "packages"
 PANEL_TITLE: Final = "Packages"
@@ -109,3 +117,4 @@ DATA_PANEL: Final = f"{DOMAIN}_panel"
 DATA_PANEL_LOCK: Final = f"{DOMAIN}_panel_lock"
 DATA_STATIC: Final = f"{DOMAIN}_static"
 DATA_SUBSCRIBERS: Final = f"{DOMAIN}_subscribers"
+DATA_WEB_SESSION: Final = f"{DOMAIN}_web_session"
