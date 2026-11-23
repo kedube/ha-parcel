@@ -154,7 +154,7 @@ class ParcelPackagesPanel extends LitElement {
     if (changed.has('panel')) this._iconRules = compileRules(this.panel?.config?.icon_rules);
     if (changed.has('_payload')) {
       this._items = normalizePayload(this._payload);
-      // A package that has gone (deleted elsewhere, or delivered long ago) closes what was open for it.
+      // A package that has gone (deleted elsewhere, say) closes what was open for it.
       const uids = new Set(this._items.map((d) => d.uid));
       if (this._selectedUid && !uids.has(this._selectedUid)) this._selectedUid = null;
       if (this._menuFor && !uids.has(this._menuFor)) this._menuFor = null;

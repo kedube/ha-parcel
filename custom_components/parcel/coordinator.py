@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, tzinfo
 import logging
 import re
 from typing import Any
@@ -35,6 +35,7 @@ from .const import (
     ADDS_PER_DAY,
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_MINUTES,
+    DELIVERED_CHECK_INTERVAL,
     DELIVERED_SENSOR_RETENTION,
     DOMAIN,
     EVENT_NEEDS_ATTENTION,
@@ -56,8 +57,10 @@ from .matching import (
     match_pending,
     same_package,
     split_key,
+    still_listed,
 )
 from .models import (
+    DELIVERED,
     NOT_FOUND,
     STATUS_SLUGS,
     Delivery,
@@ -84,6 +87,13 @@ type EventListener = Callable[[str, dict[str, Any]], None]
 def _text(value: str | None) -> str | None:
     """A trimmed string, or None when there's nothing in it."""
     return (value or "").strip() or None
+
+
+def _other_shipment(key: str, other: str) -> bool:
+    """Whether two keys name different shipments ("@<shipment ID>") of one Amazon order."""
+    first = split_key(key)[1].partition("@")[2]
+    second = split_key(other)[1].partition("@")[2]
+    return bool(first and second and first != second)
 
 
 @dataclass(slots=True)
@@ -127,6 +137,8 @@ class ParcelSnapshot:
     deliveries: dict[str, Delivery] = field(default_factory=dict)
     pending: dict[str, PendingAdd] = field(default_factory=dict)
     fetched_at: datetime | None = None
+    # Delivered packages Parcel's API no longer lists, shown as it last listed them.
+    kept: set[str] = field(default_factory=set)
 
 
 class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
@@ -166,6 +178,8 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         self._adding: set[tuple[str, str]] = set()
         # Keys Parcel has listed twice, so that's logged once.
         self._duplicates: set[str] = set()
+        # Kept delivered packages the web app's list left out, and when it first did.
+        self._missing_from_web: dict[str, datetime] = {}
 
     @property
     def web_client(self) -> ParcelWebClient | None:
@@ -277,6 +291,8 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         # Kept only once it has been read without trouble, so a restart never starts
         # from a response that can't be.
         self.storage.remember_response(raw, now)
+        if self._delivered_check_due(snapshot, now):
+            await self._async_check_delivered(snapshot, now)
         self.storage.async_schedule_save()
         return snapshot
 
@@ -372,7 +388,13 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
                 for key, record in known.items()
                 if key not in listed
                 and same_package(key, delivery.carrier_code, delivery.tracking_number)
-                and (not shipment or record["description"] == delivery.description)
+                and (
+                    not shipment
+                    or (
+                        record["description"] == delivery.description
+                        and not _other_shipment(key, delivery.key)
+                    )
+                )
             ]
             if len(others) != 1:
                 continue
@@ -381,6 +403,8 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
             if old in icons and delivery.key not in icons:
                 icons[delivery.key] = icons.pop(old)
             self.storage.unlisted.pop(old, None)
+            # Parcel lists it again, so the saved listing under the old key isn't shown.
+            self.storage.delivered.pop(old, None)
 
     def _deletion_for(self, delivery: Delivery) -> str | None:
         """The delete marker hiding this package, if there is one.
@@ -446,11 +470,161 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
             self.carriers.name(delivery.carrier_code),
         )
 
+    def _keep_delivered(
+        self,
+        listings: Mapping[str, Delivery],
+        raw_listings: Mapping[str, dict[str, Any]],
+        listed: set[str],
+        deliveries: dict[str, Delivery],
+        tz: tzinfo,
+    ) -> set[str]:
+        """Delivered packages Parcel's API no longer lists, shown as it last listed them.
+
+        Parcel's API stops listing a package about a day after it's delivered, while
+        Parcel keeps it until it's deleted, as its apps show. Only the web app's list
+        can tell which are still there, so without a web sign-in none are kept (and
+        dropping them then announces nothing: they weren't deleted). Returns the keys
+        of the packages added to deliveries from what was saved.
+        """
+        saved = self.storage.delivered
+        if self.web_client is None:
+            for key in [key for key in saved if key not in listed]:
+                deliveries.pop(key, None)
+                self.storage.known.pop(key, None)
+                self.storage.icons.pop(key, None)
+                self.storage.unlisted.pop(key, None)
+            saved.clear()
+            self._missing_from_web.clear()
+            return set()
+        for key, delivery in listings.items():
+            # One hidden by a delete marker isn't saved, so it can't come back later.
+            if delivery.status_code == DELIVERED and key in deliveries:
+                saved[key] = raw_listings[key]
+            else:
+                saved.pop(key, None)
+        kept: set[str] = set()
+        for key, listing in list(saved.items()):
+            if key in listed:
+                continue
+            restored: Delivery | None
+            try:
+                restored = Delivery.from_api(listing, tz)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                restored = None
+            if (
+                restored is None
+                or restored.key != key
+                or self._deletion_for(restored) is not None
+                # Listed again under another spelling of the number.
+                or (
+                    not by_shipment(restored.carrier_code)
+                    and any(
+                        same_package(key, other.carrier_code, other.tracking_number)
+                        for other in listings.values()
+                    )
+                )
+            ):
+                del saved[key]
+                continue
+            deliveries[key] = restored
+            kept.add(key)
+        return kept
+
+    def _delivered_check_due(self, snapshot: ParcelSnapshot, now: datetime) -> bool:
+        """Whether to read the web app's list now, to see which kept packages are still there.
+
+        Hourly; sooner to confirm a package the last read left out; and right away when
+        Parcel's API has just stopped listing one, since that also happens when it's
+        deleted in the Parcel app.
+        """
+        if self.web_client is None or not snapshot.kept:
+            return False
+        checked = self.storage.delivered_checked_at
+        if checked is None or now - checked >= DELIVERED_CHECK_INTERVAL:
+            return True
+        if any(now - since >= UNLISTED_GRACE for since in self._missing_from_web.values()):
+            return True
+        unlisted = self.storage.unlisted
+        return any(
+            (since := dt_util.parse_datetime(unlisted.get(key) or "")) is not None
+            and since > checked
+            for key in snapshot.kept
+        )
+
+    async def _async_check_delivered(self, snapshot: ParcelSnapshot, now: datetime) -> None:
+        """Read the web app's list, and let go of kept packages deleted from Parcel.
+
+        A package goes once two reads at least UNLISTED_GRACE apart both leave it out,
+        so one incomplete reply loses nothing. A list without the packages Parcel's
+        API says are on their way isn't this account's whole list, and changes nothing.
+        """
+        web = self.web_client
+        if web is None:
+            return
+        self.storage.set_delivered_checked_at(now)
+        try:
+            items = await web.async_list_deliveries()
+        except ParcelWebAuthError:
+            self.web_sign_in.async_mark_expired()
+            return
+        except ParcelError as err:
+            _LOGGER.debug("Couldn't see which delivered packages Parcel still has: %s", err)
+            return
+        self.web_sign_in.async_mark_working()
+        active = {
+            normalize_number(delivery.tracking_number)
+            for delivery in snapshot.deliveries.values()
+            if delivery.is_active
+        }
+        if active and not lists_any(items, active):
+            _LOGGER.debug("Parcel's web list left out the packages on their way; ignoring it")
+            return
+        missing = self._missing_from_web
+        for key in [key for key in missing if key not in snapshot.kept]:
+            del missing[key]
+        gone: list[str] = []
+        for key in sorted(snapshot.kept):
+            delivery = snapshot.deliveries[key]
+            if still_listed(
+                items,
+                delivery.tracking_number,
+                delivery.carrier_code,
+                extra=delivery.extra_information,
+            ):
+                missing.pop(key, None)
+            elif now - missing.setdefault(key, now) >= UNLISTED_GRACE:
+                gone.append(key)
+        if gone:
+            self._forget_kept(snapshot, gone)
+
+    def _forget_kept(self, snapshot: ParcelSnapshot, keys: list[str]) -> None:
+        """Let go of kept packages that were deleted from Parcel, and announce it."""
+        events: list[dict[str, Any]] = []
+        for key in keys:
+            self._missing_from_web.pop(key, None)
+            self.storage.delivered.pop(key, None)
+            self.storage.icons.pop(key, None)
+            self.storage.unlisted.pop(key, None)
+            snapshot.kept.discard(key)
+            delivery = snapshot.deliveries.pop(key)
+            remembered = self.storage.known.pop(key, None)
+            record: Mapping[str, Any] = remembered or {
+                "tracking_number": delivery.tracking_number,
+                "carrier_code": delivery.carrier_code,
+                "description": delivery.description,
+                "status": delivery.status_code,
+            }
+            events.append(self._event_data(removal(key, record, REASON_DELETED)))
+        self.storage.async_schedule_save()
+        # Fire once the snapshot is current, as for the changes a check notices.
+        self.hass.loop.call_soon(self._emit_all, events)
+
     def _process(self, raw: list[dict[str, Any]], fetched_at: datetime) -> ParcelSnapshot:
         tz = dt_util.get_default_time_zone()
         self.storage.prune(fetched_at)
         before = self.data.deliveries if self.data else {}
         listings: dict[str, Delivery] = {}
+        raw_listings: dict[str, dict[str, Any]] = {}
         unreadable: set[str] = set()
         for listing in raw:
             try:
@@ -466,6 +640,7 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
                 self._note_duplicate(delivery)
                 continue
             listings[delivery.key] = delivery
+            raw_listings[delivery.key] = listing
         listed = listings.keys() | unreadable
         self._adopt_records(list(listings.values()), listed)
 
@@ -482,7 +657,8 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         # A delete marker is only needed while Parcel's cached list still shows the
         # package. Once it's gone the marker goes too, so the same package shows up
         # again if it's added again later.
-        kept = self._keep_unlisted(listed | markers, before, deliveries, fetched_at)
+        waiting = self._keep_unlisted(listed | markers, before, deliveries, fetched_at)
+        kept = self._keep_delivered(listings, raw_listings, listed, deliveries, tz)
 
         # Packages added from Home Assistant wait in "pending" until Parcel lists them.
         # Parcel stores a number of its own for placeholders, so for those a newly
@@ -507,12 +683,12 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         for key in [
             key
             for key in icons
-            if key not in deliveries and key not in stored_pending and key not in kept
+            if key not in deliveries and key not in stored_pending and key not in waiting
         ]:
             del icons[key]
 
         changes = detect_changes(
-            known, deliveries, fetched_at, announce=self.storage.initialized, keep=kept
+            known, deliveries, fetched_at, announce=self.storage.initialized, keep=waiting
         )
         self.storage.mark_initialized()
         unlisted = self.storage.unlisted
@@ -524,7 +700,9 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
             # Fire after the new data is in place, so automations see current counts.
             events = [self._event_data(change) for change in changes]
             self.hass.loop.call_soon(self._emit_all, events)
-        return ParcelSnapshot(deliveries=deliveries, pending=pending, fetched_at=fetched_at)
+        return ParcelSnapshot(
+            deliveries=deliveries, pending=pending, fetched_at=fetched_at, kept=kept
+        )
 
     # Reading -----------------------------------------------------------------
 
@@ -553,10 +731,16 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         return self._summary[1]
 
     def wants_package_sensor(self, delivery: Delivery) -> bool:
-        """Per-package sensors go away two days after delivery."""
+        """Per-package sensors go away two days after delivery.
+
+        When the delivery time isn't known, two days after the package was first seen,
+        so a delivered package kept on show doesn't keep its sensor for good.
+        """
         if delivery.is_active:
             return True
         when = self.delivered_at(delivery)
+        if when is None and (record := self.storage.known.get(delivery.key)):
+            when = dt_util.parse_datetime(record["first_seen"])
         return when is None or dt_util.utcnow() - when < DELIVERED_SENSOR_RETENTION
 
     def active_numbers(self, *, besides: str | None = None) -> set[str]:
@@ -876,6 +1060,8 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         self.storage.mark_deleted(key, dt_util.utcnow())
         self.storage.pending.pop(key, None)
         self.storage.icons.pop(key, None)
+        self.storage.delivered.pop(key, None)
+        self._missing_from_web.pop(key, None)
         remembered = self.storage.known.pop(key, None)
         record: Mapping[str, Any] = remembered or {
             "tracking_number": number,
@@ -888,6 +1074,7 @@ class ParcelCoordinator(DataUpdateCoordinator[ParcelSnapshot]):
         if (current := self.data) is not None:
             current.deliveries.pop(key, None)
             current.pending.pop(key, None)
+            current.kept.discard(key)
         self.storage.async_schedule_save()
         self.async_update_listeners()
         self._emit(self._event_data(removal(key, record, REASON_DELETED)))

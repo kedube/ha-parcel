@@ -52,6 +52,10 @@ class StoredState(TypedDict):
     pending: dict[str, PendingRecord]
     deleted: dict[str, str]  # when each was deleted, so Parcel's cached list can't bring it back
     unlisted: dict[str, str]  # when a remembered or deleted package went missing from Parcel's list
+    # Delivered packages as Parcel's API last listed them, kept until they're deleted
+    # from Parcel (only with a web sign-in, which can tell).
+    delivered: dict[str, dict[str, Any]]
+    delivered_checked_at: str | None  # when the web app's list last said which are still there
     reads: list[str]  # times of deliveries requests in the last hour
     adds: list[str]  # times of add requests in the last day
     cache: CacheRecord | None
@@ -66,6 +70,8 @@ def _empty() -> StoredState:
         "pending": {},
         "deleted": {},
         "unlisted": {},
+        "delivered": {},
+        "delivered_checked_at": None,
         "reads": [],
         "adds": [],
         "cache": None,
@@ -170,6 +176,10 @@ def _coerce(stored: dict[str, Any]) -> StoredState:
         },
         "deleted": times("deleted"),
         "unlisted": times("unlisted"),
+        "delivered": {
+            key: item for key, item in records("delivered").items() if isinstance(item, dict)
+        },
+        "delivered_checked_at": _stamp(stored.get("delivered_checked_at")),
         "reads": stamps("reads"),
         "adds": stamps("adds"),
         "cache": cast(CacheRecord, cache) if usable_cache else None,
@@ -257,6 +267,20 @@ class ParcelStorage:
     def unlisted(self) -> dict[str, str]:
         """When remembered or deleted packages went missing from Parcel's list."""
         return self.data["unlisted"]
+
+    @property
+    def delivered(self) -> dict[str, dict[str, Any]]:
+        """Delivered packages as Parcel's API last listed them, by key."""
+        return self.data["delivered"]
+
+    @property
+    def delivered_checked_at(self) -> datetime | None:
+        """When the web app's list last said which delivered packages are still there."""
+        return dt_util.parse_datetime(self.data["delivered_checked_at"] or "")
+
+    def set_delivered_checked_at(self, when: datetime | None) -> None:
+        """Note when the web app's list was read for the delivered packages (None: never)."""
+        self.data["delivered_checked_at"] = when.isoformat() if when else None
 
     @property
     def initialized(self) -> bool:

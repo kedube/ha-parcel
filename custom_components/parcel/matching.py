@@ -75,6 +75,34 @@ def lists_number(items: Sequence[Mapping[str, Any]], number: str, carrier: str) 
     )
 
 
+def _fits(item: Mapping[str, Any], wanted: str, at: str, code: str, extra: str | None) -> bool:
+    """Whether a web-app item is this number (normalized, before any "@") and code.
+
+    Where the web app adds a code to the number, the code must be the package's
+    extra_information, which tells apart the shipments of one Amazon order; a number
+    given with its "@<code>" (at is "@") matches only that one.
+    """
+    item_number, item_code = web_number(item)
+    if item_number != wanted:
+        return False
+    if at:
+        return item_code == code
+    # A code that isn't the package's extra_information is another shipment.
+    return not item_code or not extra or item_code == extra
+
+
+def still_listed(
+    items: Sequence[Mapping[str, Any]], number: str, carrier: str, *, extra: str | None = None
+) -> bool:
+    """Whether the web app's list still holds this package (see find_stored for the rules)."""
+    wanted, at, code = number.partition("@")
+    wanted = normalize_number(wanted)
+    return any(
+        item.get("carrier_code") == carrier and _fits(item, wanted, at, code, extra)
+        for item in items
+    )
+
+
 def find_stored(
     items: Sequence[Mapping[str, Any]],
     number: str,
@@ -99,17 +127,11 @@ def find_stored(
     """
     wanted, at, code = number.partition("@")
     wanted = normalize_number(wanted)
-    fits = []
-    for item in items:
-        item_number, item_code = web_number(item)
-        if item.get("carrier_code") != carrier or item_number != wanted:
-            continue
-        if at:
-            if item_code == code:
-                fits.append(item)
-        elif not item_code or not extra or item_code == extra:
-            # A code that isn't the package's extra_information is another shipment.
-            fits.append(item)
+    fits = [
+        item
+        for item in items
+        if item.get("carrier_code") == carrier and _fits(item, wanted, at, code, extra)
+    ]
     if len(fits) == 1:
         return str(fits[0]["tracking_number"]), carrier
     if fits or unlisted_name is None or carrier != PLACEHOLDER_CARRIER:

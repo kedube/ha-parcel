@@ -14,6 +14,7 @@ from custom_components.parcel.matching import (
     match_pending,
     same_package,
     split_key,
+    still_listed,
 )
 from custom_components.parcel.models import Delivery
 
@@ -188,3 +189,16 @@ def test_whether_a_list_holds_any_of_the_accounts_packages() -> None:
     assert lists_any([web("1z 999-aa1 0123456784", "ups", "x")], {"1Z999AA10123456784"})
     assert not lists_any(items, {"TBA312345678901"})
     assert not lists_any([], {"TBA312345678901"})
+
+
+def test_whether_the_web_list_still_holds_a_package() -> None:
+    """Like find_stored, but any fit will do: two shipments listed alike still count."""
+    items = [web(KETTLE, "amzlus", "Kettle"), web("1Z999AA10123456784", "ups", "Grinder")]
+    assert still_listed(items, "1z 999-aa1 0123456784", "ups")
+    assert still_listed(items, ORDER, "amzlus", extra="Ab3Cd9EfG")
+    # Another shipment of the same order is gone, even though the order is there.
+    assert not still_listed(items, ORDER, "amzlus", extra="Hj7Kl2MnP")
+    assert still_listed(items, ORDER, "amzlus")
+    assert still_listed([*items, web(MUGS, "amzlus", "Mugs")], ORDER, "amzlus")
+    assert not still_listed(items, "1Z999AA10123456784", "usps")
+    assert not still_listed([], ORDER, "amzlus")

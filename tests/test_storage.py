@@ -24,6 +24,8 @@ async def test_a_new_account_starts_empty(hass: HomeAssistant) -> None:
     assert storage.pending == {}
     assert storage.icons == {}
     assert storage.deleted == {}
+    assert storage.delivered == {}
+    assert storage.delivered_checked_at is None
     assert not storage.initialized
     assert storage.cached_response() is None
 
@@ -67,6 +69,8 @@ async def test_a_damaged_file_loads_as_far_as_it_makes_sense(
             },
             "deleted": {"ups:10": "not a time", "ups:11": "2026-11-16T10:00:00+00:00"},
             "unlisted": ["not", "a", "dict"],
+            "delivered": {"usps:12": {"tracking_number": "12"}, "usps:13": "not a listing"},
+            "delivered_checked_at": "2026-11-16",
             "reads": [
                 1,
                 "2026-11-16T10:00:00+00:00",
@@ -89,6 +93,9 @@ async def test_a_damaged_file_loads_as_far_as_it_makes_sense(
     assert storage.pending == {}
     assert storage.deleted == {"ups:11": "2026-11-16T10:00:00+00:00"}
     assert storage.unlisted == {}
+    # A listing is checked when it's read back; one that can't be read is dropped then.
+    assert storage.delivered == {"usps:12": {"tracking_number": "12"}}
+    assert storage.delivered_checked_at is None
     assert storage.data["reads"] == ["2026-11-16T10:00:00+00:00"]
     assert storage.data["adds"] == []
     assert storage.cached_response() is None

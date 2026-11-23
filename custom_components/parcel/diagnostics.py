@@ -72,6 +72,10 @@ async def async_get_config_entry_diagnostics(
             "adds_last_day": coordinator.storage.adds_in_last_day(now),
             "web_sign_in_configured": coordinator.web_client is not None,
             "fetched_at": data.fetched_at.isoformat() if data and data.fetched_at else None,
+            "delivered_kept": len(data.kept) if data else 0,
+            "delivered_checked_at": checked.isoformat()
+            if (checked := coordinator.storage.delivered_checked_at)
+            else None,
             "carriers_loaded": len(coordinator.carriers.carriers),
         },
         "deliveries": [

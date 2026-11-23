@@ -33,7 +33,7 @@ export const GROUPS = {
   week: { title: 'Later this week' },
   later: { title: 'Coming later' },
   nodate: { title: 'No delivery date yet' },
-  delivered: { title: 'Delivered', sub: () => 'Recently' },
+  delivered: { title: 'Delivered' },
 };
 export const ORDER = ['new', 'pickup', 'today', 'late', 'tomorrow', 'week', 'later', 'nodate', 'delivered'];
 export const LATER_GROUPS = ['new', 'late', 'tomorrow', 'week', 'later', 'nodate'];

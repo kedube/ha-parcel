@@ -75,6 +75,10 @@ DELETED_TTL: Final = timedelta(hours=12)
 # A package missing from Parcel's reply counts as gone only once it has been missing
 # this long (two replies at least): Parcel sometimes leaves packages out of one.
 UNLISTED_GRACE: Final = timedelta(minutes=10)
+# Parcel's API stops listing a package about a day after it's delivered, but Parcel
+# keeps it until it's deleted. With a web sign-in, delivered packages stay on show
+# too, and the web app's list is read this often to see which are still there.
+DELIVERED_CHECK_INTERVAL: Final = timedelta(hours=1)
 DELIVERED_SENSOR_RETENTION: Final = timedelta(days=2)
 CARRIER_LIST_MAX_AGE: Final = timedelta(days=1)
 
